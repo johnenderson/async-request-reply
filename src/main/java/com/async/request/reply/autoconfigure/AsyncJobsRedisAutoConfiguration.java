@@ -1,0 +1,47 @@
+package com.async.request.reply.autoconfigure;
+
+import com.async.request.reply.adapter.out.persistence.redis.RedisJobRepositoryAdapterOut;
+import com.async.request.reply.adapter.out.persistence.redis.RedisSingleFlightAdapterOut;
+import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapper;
+import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.port.out.SingleFlightPortOut;
+import org.redisson.api.RedissonClient;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import tools.jackson.databind.ObjectMapper;
+
+/**
+ * Auto-configuration do storage Redis/Valkey (via Redisson). Só ativa quando o
+ * Redisson está no classpath e {@code async-jobs.storage=redis} (default). Um
+ * consumidor pode fornecer seus próprios {@link JobRepositoryPortOut}/
+ * {@link SingleFlightPortOut} e esta config recua ({@code @ConditionalOnMissingBean}).
+ */
+@AutoConfiguration
+@ConditionalOnClass(RedissonClient.class)
+@ConditionalOnProperty(name = "async-jobs.storage", havingValue = "redis", matchIfMissing = true)
+public class AsyncJobsRedisAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    RedisJobMapper redisJobMapper(ObjectMapper objectMapper) {
+        return new RedisJobMapper(objectMapper);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    JobRepositoryPortOut jobRepositoryPortOut(RedissonClient redisson,
+                                              ObjectMapper objectMapper,
+                                              RedisJobMapper jobMapper,
+                                              AsyncJobsProperties properties) {
+        return new RedisJobRepositoryAdapterOut(redisson, objectMapper, jobMapper, properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    SingleFlightPortOut singleFlightPortOut(RedissonClient redisson, AsyncJobsProperties properties) {
+        return new RedisSingleFlightAdapterOut(redisson, properties);
+    }
+}

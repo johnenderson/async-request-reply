@@ -1,7 +1,6 @@
 package com.async.request.reply.adapter.out.processing;
 
 import com.async.request.reply.spi.Routine;
-import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
@@ -14,7 +13,6 @@ import java.util.stream.Collectors;
  * (síncronas ou assíncronas), por {@link Routine#type()}. Detecta tipos
  * duplicados no startup.
  */
-@Component
 public class JobHandlerRegistry {
 
     private final Map<String, Routine> byType;
