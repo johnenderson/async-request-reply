@@ -1,6 +1,7 @@
 package com.async.request.reply;
 
 import com.async.request.reply.spi.JobHandler;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +16,9 @@ import org.springframework.web.context.WebApplicationContext;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -32,9 +36,18 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
 
     MockMvc mvc;
 
+    /** Mantém o job ativo enquanto os dois submits acontecem (sem sleep fixo). */
+    static final AtomicReference<CountDownLatch> GATE = new AtomicReference<>(new CountDownLatch(0));
+
     @BeforeEach
     void setup() {
         mvc = MockMvcBuilders.webAppContextSetup(wac).build();
+        GATE.set(new CountDownLatch(1));
+    }
+
+    @AfterEach
+    void releaseGate() {
+        GATE.get().countDown();
     }
 
     @TestConfiguration
@@ -44,7 +57,8 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
             return new JobHandler<>() {
                 public String type() { return "sf-test"; }
                 public List<String> handle(Map<String, Object> in) {
-                    try { Thread.sleep(2_000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    try { GATE.get().await(2, TimeUnit.SECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                     return List.of("ativos", "inativos");
                 }
             };

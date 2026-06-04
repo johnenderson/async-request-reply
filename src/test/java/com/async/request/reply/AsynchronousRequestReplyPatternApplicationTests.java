@@ -16,8 +16,15 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
+
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
@@ -41,9 +48,18 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
 
     MockMvc mvc;
 
+    /** Gate que mantém o handler "lento" ativo até o teste liberar (sem sleep fixo). */
+    static final AtomicReference<CountDownLatch> SLOW_GATE = new AtomicReference<>(new CountDownLatch(0));
+
     @BeforeEach
     void setup() {
         mvc = MockMvcBuilders.webAppContextSetup(wac).build();
+        SLOW_GATE.set(new CountDownLatch(1));
+    }
+
+    @AfterEach
+    void releaseSlowGate() {
+        SLOW_GATE.get().countDown();
     }
 
     // -------------------------------------------------------------------------
@@ -73,7 +89,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
             return new JobHandler<>() {
                 public String type() { return "cancel-test"; }
                 public List<String> handle(Map<String, Object> input) {
-                    try { Thread.sleep(2_000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    // bloqueia até o teste liberar — mantém o job ativo de forma determinística
+                    try { SLOW_GATE.get().await(10, TimeUnit.SECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                     return List.of("done");
                 }
             };
@@ -173,7 +191,7 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
         String location = post.getResponse().getHeader("Location");
         String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
-        Thread.sleep(2_000);
+        awaitCompleted(jobId);
 
         mvc.perform(get(location))
                 .andExpect(status().isSeeOther())
@@ -188,7 +206,7 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
 
         String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
-        Thread.sleep(2_000);
+        awaitCompleted(jobId);
 
         mvc.perform(get("/jobs/{id}/result", jobId))
                 .andExpect(status().isOk())
@@ -242,7 +260,7 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 .andExpect(status().isAccepted()).andReturn();
         String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
-        Thread.sleep(1_000);
+        awaitCompleted(jobId);
 
         mvc.perform(get("/jobs/{id}/result", jobId))
                 .andExpect(status().isOk())
@@ -283,20 +301,35 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
 
         String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
-        Thread.sleep(500); // deixa o start() rodar (não completa)
-
-        // segue em processamento — não redireciona ainda
-        mvc.perform(get("/jobs/{id}/status", jobId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status", is("PROCESSING")));
+        // aguarda o start() levar o job a PROCESSING (não completa sozinho)
+        awaitStatusBody(jobId, "PROCESSING");
 
         // worker do consumidor reporta a conclusão
         reporter.complete(jobId, List.of("pago"));
 
         // agora o status redireciona para o result
-        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isSeeOther());
+        awaitCompleted(jobId);
         mvc.perform(get("/jobs/{id}/result", jobId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content", hasSize(1)));
+    }
+
+    // --- helpers de espera (polling com timeout em vez de Thread.sleep) -----
+
+    /** Aguarda o job concluir (status redireciona 303 para o /result). */
+    private void awaitCompleted(String jobId) {
+        Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(100))
+                .until(() -> mvc.perform(get("/jobs/{id}/status", jobId))
+                        .andReturn().getResponse().getStatus() == 303);
+    }
+
+    /** Aguarda o status (corpo) atingir o valor informado. */
+    private void awaitStatusBody(String jobId, String expectedStatus) {
+        Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(100))
+                .until(() -> {
+                    var resp = mvc.perform(get("/jobs/{id}/status", jobId)).andReturn().getResponse();
+                    return resp.getStatus() == 200
+                            && resp.getContentAsString().contains("\"status\":\"" + expectedStatus + "\"");
+                });
     }
 }
