@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
+import java.util.Map;
 
 /**
  * Adapter in (web): HTTP boundary fino. Delega cada operação para um use case
@@ -62,8 +63,11 @@ public class JobControllerAdapterIn {
     // POST /jobs  — body: { "type": "...", "payload": {...} }
     @PostMapping
     public ResponseEntity<?> submit(
-            @RequestBody SubmitJobRequest request,
+            @RequestBody Map<String, Object> body,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+
+        // validação explícita no boundary (sem depender de anotações Jackson)
+        SubmitJobRequest request = SubmitJobRequest.of(body.get("type"), body.get("payload"));
 
         SubmittedJob submitted = submitJob.execute(request.type(), request.payload(), idempotencyKey);
         URI statusUri = uris.status(submitted.jobId());
