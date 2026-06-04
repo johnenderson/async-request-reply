@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: asynchronous-request-reply-pattern
+
+# Config usada apenas nos testes da própria lib
+async-jobs:
+  result-ttl: PT1H
+  retry-after-seconds: 5
+
+logging:
+  level:
+    org.springframework.web: INFO

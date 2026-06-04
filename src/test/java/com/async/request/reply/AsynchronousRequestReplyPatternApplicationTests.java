@@ -1,24 +1,43 @@
 package com.async.request.reply;
 
+import com.async.request.reply.spi.AsyncJobHandler;
+import com.async.request.reply.spi.JobContext;
+import com.async.request.reply.spi.JobHandler;
+import com.async.request.reply.spi.JobReporter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
-import static org.hamcrest.Matchers.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import java.util.List;
+import java.util.Map;
 
-@SpringBootTest
-class AsynchronousRequestReplyPatternApplicationTests {
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest(properties = "async-jobs.coalesce-in-flight=false")
+class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTestSupport {
 
     @Autowired
     WebApplicationContext wac;
+
+    @Autowired
+    JobReporter reporter;
 
     MockMvc mvc;
 
@@ -28,13 +47,72 @@ class AsynchronousRequestReplyPatternApplicationTests {
     }
 
     // -------------------------------------------------------------------------
-    // 1. POST /jobs — 202 + Location + Retry-After
+    // Handlers (rotinas do "projeto consumidor") registrados só para os testes
     // -------------------------------------------------------------------------
+    @TestConfiguration
+    static class TestHandlers {
+
+        @Bean
+        JobHandler<Map<String, Object>, List<String>> fastHandler() {
+            return new JobHandler<>() {
+                public String type() { return "test"; }
+                public List<String> handle(Map<String, Object> input) { return List.of("a", "b", "c"); }
+            };
+        }
+
+        @Bean
+        JobHandler<Map<String, Object>, List<String>> idempotentHandler() {
+            return new JobHandler<>() {
+                public String type() { return "idempotent-test"; }
+                public List<String> handle(Map<String, Object> input) { return List.of("x"); }
+            };
+        }
+
+        @Bean
+        JobHandler<Map<String, Object>, List<String>> slowHandler() {
+            return new JobHandler<>() {
+                public String type() { return "cancel-test"; }
+                public List<String> handle(Map<String, Object> input) {
+                    try { Thread.sleep(2_000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    return List.of("done");
+                }
+            };
+        }
+
+        @Bean
+        AsyncJobHandler<Map<String, Object>> asyncHandler() {
+            return new AsyncJobHandler<>() {
+                public String type() { return "async-test"; }
+                public void start(JobContext ctx, Map<String, Object> input) {
+                    // fire-and-forget: o worker do consumidor concluiria depois
+                    // via reporter.complete(ctx.jobId(), ...)
+                }
+            };
+        }
+
+        @Bean
+        JobHandler<Map<String, Object>, List<String>> nullHandler() {
+            return new JobHandler<>() {
+                public String type() { return "null-test"; }
+                public List<String> handle(Map<String, Object> input) { return null; }
+            };
+        }
+
+        @Bean
+        JobHandler<Map<String, Object>, List<String>> numericNameHandler() {
+            return new JobHandler<>() {
+                public String type() { return "123"; }
+                public List<String> handle(Map<String, Object> input) { return List.of("numeric-name"); }
+            };
+        }
+    }
+
+    private static final String BODY = "{\"type\":\"test\",\"payload\":{\"x\":1}}";
+
+    // 1. POST /jobs — 202 + Location + Retry-After
     @Test
     void submitReturns202WithRequiredHeaders() throws Exception {
-        mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"type\":\"test\"}"))
+        mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON).content(BODY))
                 .andExpect(status().isAccepted())
                 .andExpect(header().exists("Location"))
                 .andExpect(header().exists("Retry-After"))
@@ -42,42 +120,38 @@ class AsynchronousRequestReplyPatternApplicationTests {
                 .andExpect(jsonPath("$.statusUrl").isNotEmpty());
     }
 
-    // -------------------------------------------------------------------------
+    // 1b. type sem handler registrado → 400
+    @Test
+    void submitUnknownTypeReturns400() throws Exception {
+        mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"nao-existe\",\"payload\":{\"x\":1}}"))
+                .andExpect(status().isBadRequest());
+    }
+
     // 2. Idempotency-Key — mesmo job retornado em chamadas repetidas
-    // -------------------------------------------------------------------------
     @Test
     void idempotencyKeyReturnsSameJob() throws Exception {
-        String body = "{\"type\":\"idempotent-test\"}";
+        String body = "{\"type\":\"idempotent-test\",\"payload\":{\"x\":1}}";
 
-        MvcResult first = mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("Idempotency-Key", "key-abc-123")
-                        .content(body))
-                .andExpect(status().isAccepted())
-                .andReturn();
+        MvcResult first = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .header("Idempotency-Key", "key-abc-123").content(body))
+                .andExpect(status().isAccepted()).andReturn();
 
-        MvcResult second = mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("Idempotency-Key", "key-abc-123")
-                        .content(body))
-                .andExpect(status().isAccepted())
-                .andReturn();
+        MvcResult second = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .header("Idempotency-Key", "key-abc-123").content(body))
+                .andExpect(status().isAccepted()).andReturn();
 
         String firstId  = first.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
         String secondId = second.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
-        assert firstId.equals(secondId) : "Idempotency-Key must return the same jobId";
+        assertEquals(firstId, secondId, "Idempotency-Key must return the same jobId");
     }
 
-    // -------------------------------------------------------------------------
-    // 3. GET /jobs/{id}/status — Retry-After + Expires + campos obrigatórios
-    // -------------------------------------------------------------------------
+    // 3. GET status — Retry-After + Expires + campos obrigatórios
     @Test
     void statusEndpointReturnsRequiredHeadersAndFields() throws Exception {
-        MvcResult post = mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"type\":\"test\"}"))
-                .andExpect(status().isAccepted())
-                .andReturn();
+        MvcResult post = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"cancel-test\",\"payload\":{\"x\":1}}"))
+                .andExpect(status().isAccepted()).andReturn();
 
         String location = post.getResponse().getHeader("Location");
 
@@ -90,76 +164,139 @@ class AsynchronousRequestReplyPatternApplicationTests {
                 .andExpect(jsonPath("$.lastUpdatedAt").isNotEmpty());
     }
 
-    // -------------------------------------------------------------------------
     // 4. Job concluído → 303 See Other para /result
-    // -------------------------------------------------------------------------
     @Test
     void completedJobRedirectsWith303ToResult() throws Exception {
-        MvcResult post = mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"type\":\"test\"}"))
-                .andExpect(status().isAccepted())
-                .andReturn();
+        MvcResult post = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isAccepted()).andReturn();
 
         String location = post.getResponse().getHeader("Location");
-        String jobId = post.getResponse().getContentAsString()
-                .replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
-        Thread.sleep(6_000); // aguarda processamento (~5s)
+        Thread.sleep(2_000);
 
         mvc.perform(get(location))
-                .andExpect(status().isSeeOther())   // 303
+                .andExpect(status().isSeeOther())
                 .andExpect(header().string("Location", containsString("/jobs/" + jobId + "/result")));
     }
 
-    // -------------------------------------------------------------------------
-    // 5. GET /jobs/{id}/result — retorna resultado após conclusão
-    // -------------------------------------------------------------------------
+    // 5. GET /result — resultado paginado após conclusão
     @Test
-    void resultEndpointReturnsPayloadAfterCompletion() throws Exception {
-        MvcResult post = mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"type\":\"test\"}"))
-                .andExpect(status().isAccepted())
-                .andReturn();
+    void resultEndpointReturnsPaginatedPayload() throws Exception {
+        MvcResult post = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isAccepted()).andReturn();
 
-        String jobId = post.getResponse().getContentAsString()
-                .replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
-        Thread.sleep(6_000);
+        Thread.sleep(2_000);
 
         mvc.perform(get("/jobs/{id}/result", jobId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.result").isNotEmpty());
+                .andExpect(jsonPath("$.content").isArray())
+                .andExpect(jsonPath("$.content", hasSize(3)))
+                .andExpect(jsonPath("$.totalElements", is(3)))
+                .andExpect(jsonPath("$.totalPages", is(1)));
     }
 
-    // -------------------------------------------------------------------------
-    // 6. DELETE /jobs/{id}/status — cancela job → 410 Gone no status
-    // -------------------------------------------------------------------------
+    // 6. DELETE /status — cancela → 410 Gone
     @Test
     void cancelJobReturns202ThenStatusIsGone() throws Exception {
-        MvcResult post = mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"type\":\"cancel-test\"}"))
-                .andExpect(status().isAccepted())
-                .andReturn();
+        MvcResult post = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"cancel-test\",\"payload\":{\"x\":1}}"))
+                .andExpect(status().isAccepted()).andReturn();
 
-        String jobId = post.getResponse().getContentAsString()
-                .replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
-        mvc.perform(delete("/jobs/{id}/status", jobId))
-                .andExpect(status().isAccepted()); // 202
+        mvc.perform(delete("/jobs/{id}/status", jobId)).andExpect(status().isAccepted());
 
-        mvc.perform(get("/jobs/{id}/status", jobId))
-                .andExpect(status().isGone()); // 410
+        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isGone());
     }
 
-    // -------------------------------------------------------------------------
     // 7. Job inexistente → 404
-    // -------------------------------------------------------------------------
     @Test
     void unknownJobReturns404() throws Exception {
-        mvc.perform(get("/jobs/non-existent-id/status"))
-                .andExpect(status().isNotFound());
+        mvc.perform(get("/jobs/non-existent-id/status")).andExpect(status().isNotFound());
+    }
+
+    // 9. (#3/#4) Cancelamento não pode ser sobrescrito por um complete tardio
+    @Test
+    void lateCompleteDoesNotOverrideCancellation() throws Exception {
+        MvcResult post = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"async-test\",\"payload\":{\"x\":1}}"))
+                .andExpect(status().isAccepted()).andReturn();
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+
+        mvc.perform(delete("/jobs/{id}/status", jobId)).andExpect(status().isAccepted());
+
+        // worker atrasado tenta concluir — deve ser ignorado
+        reporter.complete(jobId, List.of("tarde-demais"));
+
+        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isGone()); // segue CANCELLED
+    }
+
+    // 10. (#5) Resultado nulo → /result 200 com content vazio (sem 500)
+    @Test
+    void nullResultYieldsEmptyPage() throws Exception {
+        MvcResult post = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"null-test\",\"payload\":{\"x\":1}}"))
+                .andExpect(status().isAccepted()).andReturn();
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+
+        Thread.sleep(1_000);
+
+        mvc.perform(get("/jobs/{id}/result", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").isArray())
+                .andExpect(jsonPath("$.totalElements", is(0)));
+    }
+
+    // 11. (#6) type malformado (número) → 400, não 500
+    @Test
+    void malformedTypeReturns400() throws Exception {
+        mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":123,\"payload\":{\"x\":1}}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void missingTypeReturns400() throws Exception {
+        mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"payload\":{\"x\":1}}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail", containsString("type")));
+    }
+
+    @Test
+    void missingPayloadReturns400() throws Exception {
+        mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"test\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail", containsString("payload")));
+    }
+
+    // 8. Fire-and-forget: handler async + conclusão via JobReporter
+    @Test
+    void asyncHandlerCompletesViaReporter() throws Exception {
+        MvcResult post = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"async-test\",\"payload\":{\"x\":1}}"))
+                .andExpect(status().isAccepted()).andReturn();
+
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+
+        Thread.sleep(500); // deixa o start() rodar (não completa)
+
+        // segue em processamento — não redireciona ainda
+        mvc.perform(get("/jobs/{id}/status", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("PROCESSING")));
+
+        // worker do consumidor reporta a conclusão
+        reporter.complete(jobId, List.of("pago"));
+
+        // agora o status redireciona para o result
+        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isSeeOther());
+        mvc.perform(get("/jobs/{id}/result", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(1)));
     }
 }
