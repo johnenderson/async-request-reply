@@ -14,7 +14,8 @@ Este projeto encapsula esse fluxo:
 2. A API responde rapidamente com `202 Accepted`.
 3. O processamento continua em background.
 4. O client acompanha o progresso por uma URL de status.
-5. Ao concluir, a API redireciona ou disponibiliza o resultado.
+5. Ao concluir, a API redireciona para a URL de resultado.
+6. O client recupera o resultado, com suporte a paginacao.
 
 ## Arquitetura
 
@@ -26,9 +27,19 @@ O projeto segue uma organizacao inspirada em arquitetura hexagonal:
 - `core/port/out`: portas de saida para persistencia, politica e processamento.
 - `adapter/in/web`: controller HTTP e mapeamento de erros para Problem Details.
 - `adapter/out/persistence`: persistencia in-memory dos jobs.
-- `adapter/out/processing`: processamento assincrono baseado em `@Async`.
+- `adapter/out/processing`: processamento assincrono baseado em `@Async` e dispatch para handlers.
 - `adapter/out/policy`: politicas padrao de polling e retencao.
-- `spi`: contrato que o projeto consumidor deve implementar para plugar rotinas reais.
+- `spi`: contrato que o projeto consumidor implementa para plugar rotinas reais.
+
+## Componentes principais
+
+- `Job`: entidade de dominio que guarda `id`, `type`, `payload`, status, progresso, resultado e falha.
+- `JobHandler<P, R>`: SPI implementada pelo projeto consumidor para cada rotina assincrona.
+- `JobHandlerRegistry`: indexa os handlers registrados por `type` e detecta duplicidade no startup.
+- `SubmitJobUseCase`: valida `type` e `payload`, aplica idempotencia e dispara o processamento.
+- `AsyncJobProcessorOut`: executa o job em background, converte o payload para o tipo de entrada do handler e salva o resultado.
+- `GetJobStatusUseCase`: traduz o estado do job para uma view de status.
+- `GetJobResultUseCase`: entrega o resultado concluido em formato paginado.
 
 ## Fluxo HTTP
 
@@ -52,6 +63,8 @@ Payload esperado:
 }
 ```
 
+O campo `type` precisa corresponder a um `JobHandler` registrado no contexto Spring.
+
 Resposta:
 
 ```http
@@ -63,9 +76,11 @@ Retry-After: 5
 ```json
 {
   "jobId": "uuid-do-job",
-  "statusUrl": "/jobs/uuid-do-job/status"
+  "statusUrl": "http://localhost:8080/jobs/uuid-do-job/status"
 }
 ```
+
+Se o `type` nao existir, a API retorna `400 Bad Request` com `ProblemDetail`.
 
 ### Consultar status
 
@@ -90,14 +105,14 @@ Exemplo de job em processamento:
   "result": null,
   "createdAt": "2026-06-03T22:00:00Z",
   "lastUpdatedAt": "2026-06-03T22:00:03Z",
-  "percentComplete": 60
+  "percentComplete": null
 }
 ```
 
 ### Buscar resultado
 
 ```http
-GET /jobs/{id}/result
+GET /jobs/{id}/result?page=0&size=20
 ```
 
 Possiveis respostas:
@@ -105,6 +120,21 @@ Possiveis respostas:
 - `200 OK`: resultado disponivel.
 - `409 Conflict`: job ainda nao foi concluido.
 - `404 Not Found`: job inexistente.
+
+O resultado e sempre retornado como pagina. Se o handler retornar uma lista, a lista e fatiada conforme `page` e `size`. Se retornar um objeto unico, esse objeto vira uma pagina com um item.
+
+Exemplo:
+
+```json
+{
+  "jobId": "uuid-do-job",
+  "content": ["a", "b", "c"],
+  "page": 0,
+  "size": 20,
+  "totalElements": 3,
+  "totalPages": 1
+}
+```
 
 ### Cancelar um job
 
@@ -130,7 +160,7 @@ O dominio trabalha com os seguintes estados:
 
 ## SPI para projetos consumidores
 
-A intencao do building block e permitir que um projeto consumidor implemente um `JobHandler` para cada rotina assincrona:
+Cada rotina assincrona deve ser exposta como um bean Spring que implementa `JobHandler<P, R>`:
 
 ```java
 @Component
@@ -149,13 +179,14 @@ public class RelatorioJobHandler implements JobHandler<RelatorioRequest, Relator
 }
 ```
 
-O fluxo pretendido e:
+O building block usa o `type` do request para localizar o handler. O payload JSON, recebido como `Map`, e convertido automaticamente para o tipo generico `P` declarado no handler usando o `ObjectMapper` configurado pelo Spring Boot.
 
-1. O request informa um `type`.
-2. O building block localiza o `JobHandler` correspondente.
-3. O payload e convertido para o tipo esperado pelo handler.
-4. O handler roda de forma assincrona.
-5. O retorno do handler fica disponivel em `/jobs/{id}/result`.
+Regras importantes:
+
+- Cada `type` deve ser unico.
+- Se houver dois handlers com o mesmo `type`, a aplicacao falha no startup.
+- Se o request usar um `type` sem handler registrado, a API retorna `400 Bad Request`.
+- O retorno `R` do handler vira o resultado consultavel em `/jobs/{id}/result`.
 
 ## Politicas implementadas
 
@@ -164,6 +195,7 @@ O fluxo pretendido e:
 - **Eviction agendada**: limpeza executada a cada 15 minutos.
 - **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente.
 - **Problem Details**: falhas de dominio sao traduzidas para `ProblemDetail`.
+- **Resultado paginado**: listas retornadas pelos handlers sao expostas com `page`, `size`, `totalElements` e `totalPages`.
 
 ## Como executar
 
@@ -172,19 +204,19 @@ Requisitos:
 - Java 25
 - Maven Wrapper incluso no projeto
 
-Execute:
+Execute os testes:
+
+```bash
+./mvnw test
+```
+
+Suba a aplicacao:
 
 ```bash
 ./mvnw spring-boot:run
 ```
 
-Em outro terminal, use o script de exemplo:
-
-```bash
-./test.sh
-```
-
-Ou submeta manualmente:
+Submeta um job:
 
 ```bash
 curl -i -X POST http://localhost:8080/jobs \
@@ -193,22 +225,25 @@ curl -i -X POST http://localhost:8080/jobs \
   -d '{"type":"relatorio","payload":{"mes":"junho","ano":2026}}'
 ```
 
-## Estado atual do projeto
+Para esse exemplo funcionar em runtime, precisa existir um bean `JobHandler` cujo `type()` retorne `relatorio`.
 
-O desenho do core ja aponta para a versao de building block com suporte a `type` e `JobHandler`, mas o adapter in-memory e o processador assincrono ainda precisam ser alinhados a essa versao.
+## Cobertura atual
 
-No estado atual, `./mvnw test` falha na compilacao por estes desalinhamentos:
+A suite de testes registra handlers de exemplo e cobre:
 
-- `JobRepositoryPortOut` espera `save(String type, Object payload, String idempotencyKey)`, mas `InMemoryJobRepositoryOut` ainda implementa `save(Object payload, String idempotencyKey)`.
-- `Job` espera `id`, `type` e `payload`, mas o adapter in-memory ainda instancia apenas `id` e `payload`.
-- `JobProcessorPortOut` define `supports(String type)`, mas `AsyncJobProcessorOut` ainda nao implementa esse metodo.
-- `SubmitJobUseCase` ainda chama o reposititorio sem separar `type` e `payload`.
+- submissao com `202 Accepted`, `Location` e `Retry-After`;
+- rejeicao de `type` desconhecido com `400 Bad Request`;
+- idempotencia via `Idempotency-Key`;
+- consulta de status com `Retry-After` e `Expires`;
+- redirecionamento `303 See Other` para o resultado quando concluido;
+- resultado paginado;
+- cancelamento;
+- `404 Not Found` para job inexistente.
 
-## Proximos passos sugeridos
+Ultima verificacao local:
 
-- Validar que o request possui `type` e `payload`.
-- Ajustar `SubmitJobUseCase` para chamar `repository.save(type, payload, idempotencyKey)`.
-- Ajustar `InMemoryJobRepositoryOut` para persistir `type` e `payload`.
-- Fazer `AsyncJobProcessorOut` despachar para o `JobHandler` registrado para o `type`.
-- Retornar erro de validacao quando nao houver handler para o `type`.
-- Adicionar testes para submissao, idempotencia, consulta de status, resultado, cancelamento e falhas.
+```bash
+./mvnw test
+```
+
+Resultado: `Tests run: 8, Failures: 0, Errors: 0, Skipped: 0`.
