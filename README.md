@@ -211,6 +211,9 @@ spring:
       port: 6379
 
 async-jobs:
+  storage: redis
+  web:
+    enabled: true
   result-ttl: PT1H
   retry-after-seconds: 5
   coalesce-in-flight: false
@@ -221,6 +224,8 @@ Parametros proprios:
 
 | Propriedade | Padrao | Descricao |
 | --- | --- | --- |
+| `async-jobs.storage` | `redis` | Seleciona a auto-configuracao de storage. Com `redis`, a lib registra os adapters Valkey/Redis via Redisson. Para storage proprio, use outro valor e registre beans `JobRepositoryPortOut` e `SingleFlightPortOut` no projeto consumidor. |
+| `async-jobs.web.enabled` | `true` | Liga/desliga o adapter web servlet (`/jobs`). Quando `false`, a lib funciona apenas como motor/use cases, sem expor endpoints HTTP. |
 | `async-jobs.result-ttl` | `PT1H` | Tempo de retencao dos jobs, resultados, chaves de idempotencia e controle single-flight no Valkey/Redis. Tambem e usado para calcular o header `Expires` a partir da ultima atualizacao do job. Aceita formato `Duration` do Spring, como `PT10M`, `PT1H` ou `P1D`. |
 | `async-jobs.retry-after-seconds` | `5` | Hint enviado no header `Retry-After` em submissao e consulta de status enquanto o job esta ativo. Orienta o client sobre quantos segundos esperar antes do proximo polling. |
 | `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
