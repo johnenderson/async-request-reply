@@ -21,12 +21,12 @@ Este projeto encapsula esse fluxo:
 
 O projeto segue uma organizacao inspirada em arquitetura hexagonal:
 
-- `core/domain`: modelo de dominio do job e transicoes de estado.
+- `core/domain`: modelo de leitura do job; as transicoes atomicas ficam no adapter de persistencia.
 - `core/usecase`: casos de uso da aplicacao, sem dependencia direta de HTTP.
 - `core/port/in`: portas de entrada usadas pelos adapters.
 - `core/port/out`: portas de saida para persistencia, politica e processamento.
 - `adapter/in/web`: controller HTTP e mapeamento de erros para Problem Details.
-- `adapter/out/persistence`: persistencia in-memory dos jobs.
+- `adapter/out/persistence`: persistencia dos jobs em Valkey/Redis via Redisson.
 - `adapter/out/processing`: processamento assincrono baseado em `@Async` e dispatch para handlers.
 - `adapter/out/policy`: politicas padrao de polling e retencao.
 - `spi`: contrato que o projeto consumidor implementa para plugar rotinas reais.
@@ -37,7 +37,7 @@ O projeto segue uma organizacao inspirada em arquitetura hexagonal:
 - `JobHandler<P, R>`: SPI implementada pelo projeto consumidor para cada rotina assincrona.
 - `JobHandlerRegistry`: indexa os handlers registrados por `type` e detecta duplicidade no startup.
 - `SubmitJobUseCase`: valida `type` e `payload`, aplica idempotencia e dispara o processamento.
-- `AsyncJobProcessorOut`: executa o job em background, converte o payload para o tipo de entrada do handler e salva o resultado.
+- `AsyncJobProcessorAdapterOut`: executa o job em background, converte o payload para o tipo de entrada do handler e salva o resultado.
 - `GetJobStatusUseCase`: traduz o estado do job para uma view de status.
 - `GetJobResultUseCase`: entrega o resultado concluido em formato paginado.
 
@@ -191,11 +191,53 @@ Regras importantes:
 ## Politicas implementadas
 
 - **Polling hint**: respostas usam `Retry-After` para orientar quando o client deve consultar novamente.
-- **Retencao**: jobs sao mantidos por 1 hora na implementacao in-memory.
-- **Eviction agendada**: limpeza executada a cada 15 minutos.
+- **Retencao**: jobs sao mantidos no Valkey/Redis pelo TTL `async-jobs.result-ttl` (padrao: 1 hora).
+- **Single-flight opcional**: `async-jobs.coalesce-in-flight=true` permite colapsar requests equivalentes enquanto ha job ativo.
 - **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente.
 - **Problem Details**: falhas de dominio sao traduzidas para `ProblemDetail`.
 - **Resultado paginado**: listas retornadas pelos handlers sao expostas com `page`, `size`, `totalElements` e `totalPages`.
+
+## Configuracao
+
+O projeto usa as propriedades padrao do Spring Boot para conectar no Valkey/Redis e algumas propriedades proprias sob `async-jobs`.
+
+Exemplo de `application.yaml`:
+
+```yaml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+async-jobs:
+  result-ttl: PT1H
+  retry-after-seconds: 5
+  coalesce-in-flight: false
+  coalesce-key: type
+```
+
+Parametros proprios:
+
+| Propriedade | Padrao | Descricao |
+| --- | --- | --- |
+| `async-jobs.result-ttl` | `PT1H` | Tempo de retencao dos jobs, resultados, chaves de idempotencia e controle single-flight no Valkey/Redis. Tambem e usado para calcular o header `Expires` a partir da ultima atualizacao do job. Aceita formato `Duration` do Spring, como `PT10M`, `PT1H` ou `P1D`. |
+| `async-jobs.retry-after-seconds` | `5` | Hint enviado no header `Retry-After` em submissao e consulta de status enquanto o job esta ativo. Orienta o client sobre quantos segundos esperar antes do proximo polling. |
+| `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
+| `async-jobs.coalesce-key` | `type` | Define como calcular a chave de equivalencia do single-flight. Use `type` para agrupar apenas pelo tipo do job ou `payload` para agrupar por tipo + payload normalizado. So tem efeito quando `coalesce-in-flight=true`. |
+
+Esses hints sao centralizados em `JobPolicyPortOut`. A implementacao default (`DefaultJobPolicyAdapterOut`) evita espalhar no core ou no controller decisoes como intervalo sugerido de polling e data de expiracao do recurso.
+
+Se o projeto consumidor precisar de uma politica propria, basta registrar um bean `JobPolicyPortOut`. A auto-configuracao so cria a policy default quando nao existe outro bean desse tipo.
+
+Parametros de infraestrutura mais comuns:
+
+| Propriedade | Exemplo | Descricao |
+| --- | --- | --- |
+| `spring.data.redis.host` | `localhost` | Host do Valkey/Redis usado pelo Redisson via auto-configuracao do Spring Boot. |
+| `spring.data.redis.port` | `6379` | Porta do Valkey/Redis. |
+| `spring.data.redis.password` | `secret` | Senha, quando o servidor exigir autenticacao. |
+| `spring.data.redis.database` | `0` | Database logico Redis/Valkey. |
 
 ## Como executar
 
@@ -209,6 +251,8 @@ Execute os testes:
 ```bash
 ./mvnw test
 ```
+
+A suite usa Testcontainers para subir Valkey automaticamente; nao e necessario manter Redis/Valkey rodando em `localhost`.
 
 Suba a aplicacao:
 
@@ -246,4 +290,4 @@ Ultima verificacao local:
 ./mvnw test
 ```
 
-Resultado: `Tests run: 8, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`.
