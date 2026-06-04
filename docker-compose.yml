@@ -1,0 +1,17 @@
+services:
+  valkey:
+    image: valkey/valkey:8.1.8-alpine
+    container_name: async-request-reply-valkey
+    ports:
+      - "6379:6379"
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  valkey-data:
