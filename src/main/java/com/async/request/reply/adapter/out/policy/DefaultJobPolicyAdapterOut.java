@@ -18,22 +18,15 @@ public class DefaultJobPolicyAdapterOut implements JobPolicyPortOut {
     /** Mesma retenção do storage (async-jobs.result-ttl). */
     private final Duration retention;
     private final int retryAfterSeconds;
-    private final boolean coalesceInFlight;
 
     public DefaultJobPolicyAdapterOut(AsyncJobsProperties properties) {
         this.retention = properties.resultTtl();
         this.retryAfterSeconds = properties.retryAfterSeconds();
-        this.coalesceInFlight = properties.coalesceInFlight();
     }
 
     @Override
     public int retryAfterSeconds() {
         return retryAfterSeconds;
-    }
-
-    @Override
-    public boolean coalesceInFlight() {
-        return coalesceInFlight;
     }
 
     @Override

@@ -8,6 +8,7 @@ import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
 import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
 import com.async.request.reply.core.port.out.SingleFlightPortOut;
 import com.async.request.reply.core.result.SubmittedJob;
 import org.springframework.stereotype.Service;
@@ -26,17 +27,20 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
     private final JobRepositoryPortOut repository;
     private final JobProcessorPortOut processor;
     private final JobPolicyPortOut policy;
+    private final JobSubmissionPolicyPortOut submissionPolicy;
     private final SingleFlightPortOut singleFlight;
     private final CoalescingKeyPortOut coalescingKey;
 
     public SubmitJobUseCase(JobRepositoryPortOut repository,
                             JobProcessorPortOut processor,
                             JobPolicyPortOut policy,
+                            JobSubmissionPolicyPortOut submissionPolicy,
                             SingleFlightPortOut singleFlight,
                             CoalescingKeyPortOut coalescingKey) {
         this.repository = repository;
         this.processor = processor;
         this.policy = policy;
+        this.submissionPolicy = submissionPolicy;
         this.singleFlight = singleFlight;
         this.coalescingKey = coalescingKey;
     }
@@ -54,7 +58,7 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
         }
 
         // 2. Single-flight (coalescing): se já há um job ativo p/ a chave, retorna ele
-        String key = policy.coalesceInFlight() ? coalescingKey.keyFor(type, payload) : null;
+        String key = submissionPolicy.coalesceInFlight() ? coalescingKey.keyFor(type, payload) : null;
         if (key != null) {
             Optional<String> owner = singleFlight.peek(key).filter(this::isActive);
             if (owner.isPresent()) {

@@ -14,7 +14,5 @@ public interface JobPolicyPortOut {
 
     int retryAfterSeconds();
 
-    boolean coalesceInFlight();
-
     Instant expiresAt(Job job);
 }
