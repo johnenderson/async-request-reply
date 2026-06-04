@@ -1,4 +1,4 @@
-package com.async.request.reply.adapter.in.web;
+package com.async.request.reply.adapter.in.web.mapper;
 
 import com.async.request.reply.core.exception.JobException;
 import org.springframework.http.HttpStatus;

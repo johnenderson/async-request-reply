@@ -1,4 +1,4 @@
-package com.async.request.reply.adapter.in.web;
+package com.async.request.reply.adapter.in.web.uribuilder;
 
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;

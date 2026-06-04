@@ -19,8 +19,10 @@ public class CancelJobUseCase implements CancelJobPortIn {
 
     @Override
     public CancelResult execute(String id) {
-        return repository.findById(id)
-                .map(job -> job.cancel() ? CancelResult.CANCELLED : CancelResult.ALREADY_TERMINAL)
-                .orElse(CancelResult.NOT_FOUND);
+        if (repository.findById(id).isEmpty()) {
+            return CancelResult.NOT_FOUND;
+        }
+        // transição atômica; false = já terminal
+        return repository.cancel(id) ? CancelResult.CANCELLED : CancelResult.ALREADY_TERMINAL;
     }
 }

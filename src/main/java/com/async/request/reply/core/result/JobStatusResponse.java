@@ -1,4 +1,4 @@
-package com.async.request.reply.core.port.in;
+package com.async.request.reply.core.result;
 
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.JobStatus;
@@ -6,7 +6,7 @@ import com.async.request.reply.core.enums.JobStatus;
 import java.time.Instant;
 
 /**
- * Status body retornado para estados não-terminais (PENDING / PROCESSING).
+ * Status retornado para estados não-terminais (PENDING / PROCESSING).
  */
 public record JobStatusResponse(
         String jobId,

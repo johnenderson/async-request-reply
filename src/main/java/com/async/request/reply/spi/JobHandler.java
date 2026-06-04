@@ -1,23 +1,17 @@
 package com.async.request.reply.spi;
 
 /**
- * SPI (Service Provider Interface) da biblioteca. O projeto consumidor
- * implementa um bean {@code JobHandler} por rotina assíncrona que quer expor.
+ * SPI síncrono: a rotina roda inteira dentro de {@link #handle(Object)} e o
+ * retorno É o sinal de conclusão — a lib marca o job como COMPLETED com o
+ * resultado retornado (ou FAILED se lançar exceção).
  *
- * <p>O fluxo: {@code POST /jobs {"type": "...", "payload": {...}}} faz a lib
- * localizar o handler cujo {@link #type()} bate com o {@code type} do request,
- * converter o payload para {@code P} e invocar {@link #handle(Object)} de forma
- * assíncrona. O retorno {@code R} vira o resultado recuperável em
- * {@code GET /jobs/{id}/result}.
+ * <p>Use {@link AsyncJobHandler} quando a rotina apenas dispara o trabalho e o
+ * resultado chega depois (evento/webhook), reportado via {@link JobReporter}.
  *
- * @param <P> tipo do input da rotina (deserializado do payload JSON)
+ * @param <P> tipo do input (deserializado do payload JSON)
  * @param <R> tipo do resultado produzido pela rotina
  */
-public interface JobHandler<P, R> {
+public interface JobHandler<P, R> extends Routine {
 
-    /** Chave única que identifica a rotina, ex: "relatorio.mensal". */
-    String type();
-
-    /** Executa a rotina do projeto consumidor. */
     R handle(P input);
 }

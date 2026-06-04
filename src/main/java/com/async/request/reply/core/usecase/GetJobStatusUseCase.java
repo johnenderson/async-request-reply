@@ -2,10 +2,10 @@ package com.async.request.reply.core.usecase;
 
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.port.in.GetJobStatusPortIn;
-import com.async.request.reply.core.port.in.JobStatusResponse;
-import com.async.request.reply.core.port.in.JobStatusView;
 import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.result.JobStatusResponse;
+import com.async.request.reply.core.result.JobStatusView;
 import org.springframework.stereotype.Service;
 
 /**
@@ -33,7 +33,10 @@ public class GetJobStatusUseCase implements GetJobStatusPortIn {
     private JobStatusView toView(Job job) {
         return switch (job.getStatus()) {
             case PENDING, PROCESSING -> new JobStatusView.InProgress(
-                    JobStatusResponse.from(job), policy.retryAfterSeconds(), policy.expiresAt(job));
+                    JobStatusResponse.from(job),
+                    policy.retryAfterSeconds(),
+                    policy.expiresAt(job)
+            );
             case COMPLETED -> new JobStatusView.Completed(policy.expiresAt(job));
             case FAILED    -> new JobStatusView.Failed(job.getFailure());
             case CANCELLED -> new JobStatusView.Cancelled();

@@ -1,4 +1,4 @@
-package com.async.request.reply.core.port.in;
+package com.async.request.reply.core.result;
 
 import com.async.request.reply.core.exception.JobException;
 
@@ -10,16 +10,16 @@ import java.time.Instant;
  */
 public sealed interface JobStatusView {
 
-    /** PENDING / PROCESSING — o client deve continuar o polling. */
+    /** PENDING / PROCESSING: o client deve continuar o polling. */
     record InProgress(JobStatusResponse body, int retryAfterSeconds, Instant expiresAt) implements JobStatusView {}
 
-    /** COMPLETED — redireciona o client para o result resource. */
+    /** COMPLETED: redireciona o client para o result resource. */
     record Completed(Instant expiresAt) implements JobStatusView {}
 
-    /** FAILED — erro terminal; o adapter web o renderiza como Problem Detail. */
+    /** FAILED: erro terminal; o adapter web o renderiza como Problem Detail. */
     record Failed(JobException error) implements JobStatusView {}
 
-    /** CANCELLED — o job foi cancelado. */
+    /** CANCELLED: o job foi cancelado. */
     record Cancelled() implements JobStatusView {}
 
     /** Nenhum job existe para o id informado. */

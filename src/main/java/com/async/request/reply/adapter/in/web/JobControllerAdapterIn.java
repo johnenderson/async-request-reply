@@ -1,13 +1,30 @@
 package com.async.request.reply.adapter.in.web;
 
-import com.async.request.reply.core.port.in.*;
+import com.async.request.reply.adapter.in.web.dto.SubmitJobRequest;
+import com.async.request.reply.adapter.in.web.mapper.JobProblemMapper;
+import com.async.request.reply.adapter.in.web.mapper.JobResponseMapper;
+import com.async.request.reply.adapter.in.web.uribuilder.JobUriBuilder;
+import com.async.request.reply.core.port.in.CancelJobPortIn;
+import com.async.request.reply.core.port.in.GetJobResultPortIn;
+import com.async.request.reply.core.port.in.GetJobStatusPortIn;
+import com.async.request.reply.core.port.in.SubmitJobPortIn;
+import com.async.request.reply.core.result.JobResultView;
+import com.async.request.reply.core.result.JobStatusView;
+import com.async.request.reply.core.result.SubmittedJob;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
-import java.util.Map;
 
 /**
  * Adapter in (web): HTTP boundary fino. Delega cada operação para um use case
@@ -24,34 +41,37 @@ public class JobControllerAdapterIn {
     private final CancelJobPortIn cancelJob;
     private final JobUriBuilder uris;
     private final JobProblemMapper problemMapper;
+    private final JobResponseMapper responseMapper;
 
     public JobControllerAdapterIn(SubmitJobPortIn submitJob,
                                   GetJobStatusPortIn getJobStatus,
                                   GetJobResultPortIn getJobResult,
                                   CancelJobPortIn cancelJob,
                                   JobUriBuilder uris,
-                                  JobProblemMapper problemMapper) {
+                                  JobProblemMapper problemMapper,
+                                  JobResponseMapper responseMapper) {
         this.submitJob = submitJob;
         this.getJobStatus = getJobStatus;
         this.getJobResult = getJobResult;
         this.cancelJob = cancelJob;
         this.uris = uris;
         this.problemMapper = problemMapper;
+        this.responseMapper = responseMapper;
     }
 
-    // POST /jobs
+    // POST /jobs  — body: { "type": "...", "payload": {...} }
     @PostMapping
-    public ResponseEntity<Map<String, String>> submit(
-            @RequestBody Map<String, Object> payload,
+    public ResponseEntity<?> submit(
+            @RequestBody SubmitJobRequest request,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
 
-        SubmittedJob submitted = submitJob.execute(payload, idempotencyKey);
+        SubmittedJob submitted = submitJob.execute(request.type(), request.payload(), idempotencyKey);
         URI statusUri = uris.status(submitted.jobId());
 
         return ResponseEntity.accepted()
                 .location(statusUri)
                 .header("Retry-After", String.valueOf(submitted.retryAfterSeconds()))
-                .body(Map.of("jobId", submitted.jobId(), "statusUrl", statusUri.toString()));
+                .body(responseMapper.toSubmittedJobResponse(submitted, statusUri));
     }
 
     // GET /jobs/{id}/status
@@ -62,7 +82,7 @@ public class JobControllerAdapterIn {
             case JobStatusView.InProgress v -> ResponseEntity.ok()
                     .header("Retry-After", String.valueOf(v.retryAfterSeconds()))
                     .header("Expires", v.expiresAt().toString())
-                    .body(v.body());
+                    .body(responseMapper.toStatusResponse(v));
 
             case JobStatusView.Completed v -> ResponseEntity.status(HttpStatus.SEE_OTHER) // 303
                     .location(uris.result(id))
@@ -80,13 +100,17 @@ public class JobControllerAdapterIn {
         };
     }
 
-    // GET /jobs/{id}/result
+    // GET /jobs/{id}/result?page=&size=
     @GetMapping("/{id}/result")
-    public ResponseEntity<?> result(@PathVariable String id) {
-        return switch (getJobResult.execute(id)) {
-            case JobResultView.Found v -> ResponseEntity.ok(Map.of("jobId", v.jobId(), "result", v.result()));
+    public ResponseEntity<?> result(
+            @PathVariable String id,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        return switch (getJobResult.execute(id, page, size)) {
+            case JobResultView.Found v -> ResponseEntity.ok(responseMapper.toResultResponse(v));
             case JobResultView.NotCompleted v -> ResponseEntity.status(HttpStatus.CONFLICT) // 409
-                    .body(Map.of("error", "Job is not completed yet", "status", v.status()));
+                    .body(responseMapper.toNotCompletedResponse(v));
             case JobResultView.NotFound ignored -> ResponseEntity.notFound().build();       // 404
         };
     }
@@ -95,9 +119,9 @@ public class JobControllerAdapterIn {
     @DeleteMapping("/{id}/status")
     public ResponseEntity<Void> cancel(@PathVariable String id) {
         return switch (cancelJob.execute(id)) {
-            case CANCELLED        -> ResponseEntity.accepted().build();                   // 202
+            case CANCELLED -> ResponseEntity.accepted().build();                   // 202
             case ALREADY_TERMINAL -> ResponseEntity.status(HttpStatus.CONFLICT).build();  // 409
-            case NOT_FOUND        -> ResponseEntity.notFound().build();                   // 404
+            case NOT_FOUND -> ResponseEntity.notFound().build();                   // 404
         };
     }
 }
