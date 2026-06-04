@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit;
  *       (check-and-set seguro entre instâncias).</li>
  * </ul>
  */
-public class RedisJobRepositoryAdapaterOut implements JobRepositoryPortOut {
+public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
     private static final String JOB_PREFIX = "job:";
     private static final String IDEM_PREFIX = "idem:";
@@ -47,7 +47,7 @@ public class RedisJobRepositoryAdapaterOut implements JobRepositoryPortOut {
     private final RedisJobMapper jobMapper;
     private final Duration retention;
 
-    public RedisJobRepositoryAdapaterOut(RedissonClient redisson, 
+    public RedisJobRepositoryAdapterOut(RedissonClient redisson, 
                                          ObjectMapper objectMapper,
                                          RedisJobMapper jobMapper,
                                          AsyncJobsProperties properties) {
