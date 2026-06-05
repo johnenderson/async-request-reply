@@ -33,11 +33,11 @@ O projeto segue uma organizacao inspirada em arquitetura hexagonal:
 
 ## Componentes principais
 
-- `Job`: entidade de dominio que guarda `id`, `type`, `payload`, status, progresso, resultado e falha.
-- `JobHandler<P, R>`: SPI implementada pelo projeto consumidor para cada rotina assincrona.
+- `Job`: entidade de dominio que guarda `id`, `type`, status, progresso, resultado e falha.
+- `JobHandler<R>`: SPI implementada pelo projeto consumidor para cada rotina assincrona.
 - `JobHandlerRegistry`: indexa os handlers registrados por `type` e detecta duplicidade no startup.
-- `SubmitJobUseCase`: valida `type` e `payload`, aplica idempotencia e dispara o processamento.
-- `AsyncJobProcessorAdapterOut`: executa o job em background, converte o payload para o tipo de entrada do handler e salva o resultado.
+- `SubmitJobUseCase`: valida `type`, aplica idempotencia e dispara o processamento.
+- `AsyncJobProcessorAdapterOut`: executa o job em background, chama a rotina registrada para o `type` e salva o resultado.
 - `GetJobStatusUseCase`: traduz o estado do job para uma view de status.
 - `GetJobResultUseCase`: entrega o resultado concluido em formato paginado.
 
@@ -46,24 +46,13 @@ O projeto segue uma organizacao inspirada em arquitetura hexagonal:
 ### Submeter um job
 
 ```http
-POST /jobs
-Content-Type: application/json
+POST /jobs/{type}
 Idempotency-Key: opcional
 ```
 
-Payload esperado:
+O `type` no path precisa corresponder a um `JobHandler` registrado no contexto Spring e deve usar apenas letras, números, ponto, hífen ou underscore (`[A-Za-z0-9._-]+`). O submit apenas materializa o job daquele tipo; filtros, agrupamentos e paginação são aplicados na leitura do resultado.
 
-```json
-{
-  "type": "relatorio",
-  "payload": {
-    "mes": "junho",
-    "ano": 2026
-  }
-}
-```
-
-O campo `type` precisa corresponder a um `JobHandler` registrado no contexto Spring.
+> Breaking change: versões anteriores aceitavam `POST /jobs` com `type` e `payload` no corpo. O contrato atual é parameterless e usa `POST /jobs/{type}`.
 
 Resposta:
 
@@ -121,7 +110,7 @@ Possiveis respostas:
 - `409 Conflict`: job ainda nao foi concluido.
 - `404 Not Found`: job inexistente.
 
-O resultado e sempre retornado como pagina. Se o handler retornar uma lista, a lista e fatiada conforme `page` e `size`. Se retornar um objeto unico, esse objeto vira uma pagina com um item.
+O resultado e sempre retornado como pagina. Se o handler retornar uma lista, a lista e fatiada conforme `page` e `size`. Se retornar um objeto unico, esse objeto vira uma pagina com um item. Outros filtros/agrupamentos de leitura devem ser modelados como query params desse endpoint.
 
 Exemplo:
 
@@ -160,11 +149,11 @@ O dominio trabalha com os seguintes estados:
 
 ## SPI para projetos consumidores
 
-Cada rotina assincrona deve ser exposta como um bean Spring que implementa `JobHandler<P, R>`:
+Cada rotina assincrona deve ser exposta como um bean Spring que implementa `JobHandler<R>`:
 
 ```java
 @Component
-public class RelatorioJobHandler implements JobHandler<RelatorioRequest, RelatorioResponse> {
+public class RelatorioJobHandler implements JobHandler<RelatorioResponse> {
 
     @Override
     public String type() {
@@ -172,14 +161,14 @@ public class RelatorioJobHandler implements JobHandler<RelatorioRequest, Relator
     }
 
     @Override
-    public RelatorioResponse handle(RelatorioRequest input) {
+    public RelatorioResponse handle() {
         // regra de negocio do projeto consumidor
         return new RelatorioResponse("relatorio-gerado.pdf");
     }
 }
 ```
 
-O building block usa o `type` do request para localizar o handler. O payload JSON, recebido como `Map`, e convertido automaticamente para o tipo generico `P` declarado no handler usando o `ObjectMapper` configurado pelo Spring Boot.
+O building block usa o `type` do path para localizar o handler. No adapter web default, o submit nao recebe body; a rotina deve produzir o resultado base que sera consultado em `/jobs/{id}/result`.
 
 Regras importantes:
 
@@ -196,6 +185,8 @@ Regras importantes:
 - **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente.
 - **Problem Details**: falhas de dominio sao traduzidas para `ProblemDetail`.
 - **Resultado paginado**: listas retornadas pelos handlers sao expostas com `page`, `size`, `totalElements` e `totalPages`.
+
+Como o submit nao recebe parâmetros, o dedupe/single-flight é por `type`. Operações logicamente distintas devem usar `type`s distintos; filtros de leitura devem ficar no endpoint de resultado.
 
 ## Configuracao
 
@@ -217,7 +208,6 @@ async-jobs:
   result-ttl: PT1H
   retry-after-seconds: 5
   coalesce-in-flight: false
-  coalesce-key: type
 ```
 
 Parametros proprios:
@@ -229,7 +219,6 @@ Parametros proprios:
 | `async-jobs.result-ttl` | `PT1H` | Tempo de retencao dos jobs, resultados, chaves de idempotencia e controle single-flight no Valkey/Redis. Tambem e usado para calcular o header `Expires` a partir da ultima atualizacao do job. Aceita formato `Duration` do Spring, como `PT10M`, `PT1H` ou `P1D`. |
 | `async-jobs.retry-after-seconds` | `5` | Hint enviado no header `Retry-After` em submissao e consulta de status enquanto o job esta ativo. Orienta o client sobre quantos segundos esperar antes do proximo polling. |
 | `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
-| `async-jobs.coalesce-key` | `type` | Define como calcular a chave de equivalencia do single-flight. Use `type` para agrupar apenas pelo tipo do job ou `payload` para agrupar por tipo + payload normalizado. So tem efeito quando `coalesce-in-flight=true`. |
 
 Esses hints sao centralizados em `JobPolicyPortOut`. A implementacao default (`DefaultJobPolicyAdapterOut`) evita espalhar no core ou no controller decisoes como intervalo sugerido de polling e data de expiracao do recurso.
 
@@ -268,10 +257,8 @@ Suba a aplicacao:
 Submeta um job:
 
 ```bash
-curl -i -X POST http://localhost:8080/jobs \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: exemplo-1" \
-  -d '{"type":"relatorio","payload":{"mes":"junho","ano":2026}}'
+curl -i -X POST http://localhost:8080/jobs/relatorio \
+  -H "Idempotency-Key: exemplo-1"
 ```
 
 Para esse exemplo funcionar em runtime, precisa existir um bean `JobHandler` cujo `type()` retorne `relatorio`.
