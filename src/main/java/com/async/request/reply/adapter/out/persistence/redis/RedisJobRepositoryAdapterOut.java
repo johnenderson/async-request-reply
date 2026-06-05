@@ -139,7 +139,7 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
             // espera até 2s; SEM lease fixo → watchdog do Redisson renova o lock
             // enquanto a thread o mantém (evita expirar no meio da seção crítica).
             locked = lock.tryLock(2, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             return false;
         }

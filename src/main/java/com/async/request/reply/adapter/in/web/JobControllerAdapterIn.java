@@ -107,8 +107,8 @@ public class JobControllerAdapterIn {
                 yield ResponseEntity.status(problem.getStatus()).body(problem); // 422
             }
 
-            case JobStatusView.Cancelled ignored -> ResponseEntity.status(HttpStatus.GONE).build(); // 410
-            case JobStatusView.NotFound ignored -> ResponseEntity.notFound().build();               // 404
+            case JobStatusView.Cancelled _ -> ResponseEntity.status(HttpStatus.GONE).build(); // 410
+            case JobStatusView.NotFound _ -> ResponseEntity.notFound().build();               // 404
         };
     }
 
@@ -126,7 +126,7 @@ public class JobControllerAdapterIn {
             case JobResultView.Found v -> ResponseEntity.ok(responseMapper.toResultResponse(v));
             case JobResultView.NotCompleted v -> ResponseEntity.status(HttpStatus.CONFLICT) // 409
                     .body(responseMapper.toNotCompletedResponse(v));
-            case JobResultView.NotFound ignored -> ResponseEntity.notFound().build();       // 404
+            case JobResultView.NotFound _ -> ResponseEntity.notFound().build();       // 404
         };
     }
 
