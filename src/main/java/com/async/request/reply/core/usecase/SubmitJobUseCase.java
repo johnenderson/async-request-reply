@@ -46,7 +46,7 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
     }
 
     @Override
-    public SubmittedJob execute(String type, Object payload, String idempotencyKey) {
+    public SubmittedJob execute(String type, String idempotencyKey) {
         ensureRoutineRegistered(type);
 
         // 1. Idempotency: um retry da mesma key retorna sempre o MESMO job
@@ -58,7 +58,7 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
         }
 
         // 2. Single-flight (coalescing): se já há um job ativo p/ a chave, retorna ele
-        String key = submissionPolicy.coalesceInFlight() ? coalescingKey.keyFor(type, payload) : null;
+        String key = submissionPolicy.coalesceInFlight() ? coalescingKey.keyFor(type) : null;
         if (key != null) {
             Optional<String> owner = singleFlight.peek(key).filter(this::isActive);
             if (owner.isPresent()) {
@@ -79,7 +79,7 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
         }
 
         // 4. Cria (com dedupe de idempotência) e dispara o processamento
-        Job job = repository.create(id, type, payload, idempotencyKey);
+        Job job = repository.create(id, type, idempotencyKey);
         if (job.getId().equals(id) && job.getStatus() == JobStatus.PENDING) {
             processor.process(job); // via Spring proxy → @Async funciona
         }

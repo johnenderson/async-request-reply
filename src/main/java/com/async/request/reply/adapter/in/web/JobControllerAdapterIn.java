@@ -1,9 +1,9 @@
 package com.async.request.reply.adapter.in.web;
 
-import com.async.request.reply.adapter.in.web.dto.SubmitJobRequest;
 import com.async.request.reply.adapter.in.web.mapper.JobProblemMapper;
 import com.async.request.reply.adapter.in.web.mapper.JobResponseMapper;
 import com.async.request.reply.adapter.in.web.uribuilder.JobUriBuilder;
+import com.async.request.reply.core.exception.InvalidJobRequestException;
 import com.async.request.reply.core.port.in.CancelJobPortIn;
 import com.async.request.reply.core.port.in.GetJobResultPortIn;
 import com.async.request.reply.core.port.in.GetJobStatusPortIn;
@@ -18,14 +18,12 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
-import java.util.Map;
 
 /**
  * Adapter in (web): HTTP boundary fino. Delega cada operação para um use case
@@ -35,6 +33,8 @@ import java.util.Map;
 @RestController
 @RequestMapping("/jobs")
 public class JobControllerAdapterIn {
+
+    private static final String TYPE_PATTERN = "[A-Za-z0-9._-]+";
 
     private final SubmitJobPortIn submitJob;
     private final GetJobStatusPortIn getJobStatus;
@@ -60,22 +60,27 @@ public class JobControllerAdapterIn {
         this.responseMapper = responseMapper;
     }
 
-    // POST /jobs  — body: { "type": "...", "payload": {...} }
-    @PostMapping
+    // POST /jobs/{type} — materializa o job daquele tipo; filtros ficam no /result
+    @PostMapping("/{type}")
     public ResponseEntity<?> submit(
-            @RequestBody Map<String, Object> body,
+            @PathVariable String type,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
 
-        // validação explícita no boundary (sem depender de anotações Jackson)
-        SubmitJobRequest request = SubmitJobRequest.of(body.get("type"), body.get("payload"));
-
-        SubmittedJob submitted = submitJob.execute(request.type(), request.payload(), idempotencyKey);
+        validateType(type);
+        SubmittedJob submitted = submitJob.execute(type, idempotencyKey);
         URI statusUri = uris.status(submitted.jobId());
 
         return ResponseEntity.accepted()
                 .location(statusUri)
                 .header("Retry-After", String.valueOf(submitted.retryAfterSeconds()))
                 .body(responseMapper.toSubmittedJobResponse(submitted, statusUri));
+    }
+
+    private void validateType(String type) {
+        if (type == null || type.isBlank() || !type.matches(TYPE_PATTERN)) {
+            throw new InvalidJobRequestException(
+                    "O path variable 'type' deve usar apenas letras, números, ponto, hífen ou underscore.");
+        }
     }
 
     // GET /jobs/{id}/status

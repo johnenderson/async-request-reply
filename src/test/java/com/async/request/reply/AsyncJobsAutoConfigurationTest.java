@@ -6,6 +6,7 @@ import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapp
 import com.async.request.reply.autoconfigure.AsyncJobsAutoConfiguration;
 import com.async.request.reply.autoconfigure.AsyncJobsRedisAutoConfiguration;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.SingleFlightPortOut;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RedissonClient;
@@ -41,11 +42,13 @@ class AsyncJobsAutoConfigurationTest {
     void customStorageDisablesRedisAutoConfigurationAndUsesProvidedPorts() {
         JobRepositoryPortOut repository = mock(JobRepositoryPortOut.class);
         SingleFlightPortOut singleFlight = mock(SingleFlightPortOut.class);
+        JobResultStorePortOut resultStore = mock(JobResultStorePortOut.class);
 
         contextRunner
                 .withPropertyValues("async-jobs.storage=custom")
                 .withBean(JobRepositoryPortOut.class, () -> repository)
                 .withBean(SingleFlightPortOut.class, () -> singleFlight)
+                .withBean(JobResultStorePortOut.class, () -> resultStore)
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(RedisJobMapper.class);
                     assertThat(context).doesNotHaveBean(RedisJobRepositoryAdapterOut.class);

@@ -1,9 +1,11 @@
 package com.async.request.reply.autoconfigure;
 
 import com.async.request.reply.adapter.out.persistence.redis.RedisJobRepositoryAdapterOut;
+import com.async.request.reply.adapter.out.persistence.redis.RedisJobResultStoreAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.RedisSingleFlightAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapper;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.SingleFlightPortOut;
 import org.redisson.api.RedissonClient;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -26,17 +28,24 @@ public class AsyncJobsRedisAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    RedisJobMapper redisJobMapper(ObjectMapper objectMapper) {
-        return new RedisJobMapper(objectMapper);
+    RedisJobMapper redisJobMapper() {
+        return new RedisJobMapper();
     }
 
     @Bean
     @ConditionalOnMissingBean
     JobRepositoryPortOut jobRepositoryPortOut(RedissonClient redisson,
-                                              ObjectMapper objectMapper,
                                               RedisJobMapper jobMapper,
                                               AsyncJobsProperties properties) {
-        return new RedisJobRepositoryAdapterOut(redisson, objectMapper, jobMapper, properties);
+        return new RedisJobRepositoryAdapterOut(redisson, jobMapper, properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    JobResultStorePortOut jobResultStorePortOut(RedissonClient redisson,
+                                                ObjectMapper objectMapper,
+                                                AsyncJobsProperties properties) {
+        return new RedisJobResultStoreAdapterOut(redisson, objectMapper, properties);
     }
 
     @Bean

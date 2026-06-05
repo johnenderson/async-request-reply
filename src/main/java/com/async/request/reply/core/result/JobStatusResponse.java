@@ -11,7 +11,6 @@ import java.time.Instant;
 public record JobStatusResponse(
         String jobId,
         JobStatus status,
-        Object result,
         Instant createdAt,
         Instant lastUpdatedAt,
         Integer percentComplete
@@ -20,7 +19,6 @@ public record JobStatusResponse(
         return new JobStatusResponse(
                 job.getId(),
                 job.getStatus(),
-                job.getResult(),
                 job.getCreatedAt(),
                 job.getLastUpdatedAt(),
                 job.getPercentComplete()

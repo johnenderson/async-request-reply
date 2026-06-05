@@ -16,7 +16,7 @@ public interface JobRepositoryPortOut {
      * Cria um novo job com id pré-gerado. Se {@code idempotencyKey} já existir,
      * retorna o job existente (sem criar outro) — dedupe atômico.
      */
-    Job create(String id, String type, Object payload, String idempotencyKey);
+    Job create(String id, String type, String idempotencyKey);
 
     Optional<Job> findById(String id);
 
@@ -26,8 +26,8 @@ public interface JobRepositoryPortOut {
     /** PENDING → PROCESSING. */
     boolean start(String id);
 
-    /** PENDING/PROCESSING → COMPLETED, gravando o resultado. */
-    boolean complete(String id, Object result);
+    /** PENDING/PROCESSING → COMPLETED. O resultado é materializado no result store. */
+    boolean complete(String id);
 
     /** PENDING/PROCESSING → FAILED, gravando o erro. */
     boolean fail(String id, String title, String detail);

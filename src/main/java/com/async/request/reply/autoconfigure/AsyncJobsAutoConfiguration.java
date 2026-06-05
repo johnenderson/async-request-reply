@@ -1,6 +1,5 @@
 package com.async.request.reply.autoconfigure;
 
-import com.async.request.reply.adapter.out.coalescing.PayloadCoalescingKeyAdapterOut;
 import com.async.request.reply.adapter.out.coalescing.TypeCoalescingKeyAdapterOut;
 import com.async.request.reply.adapter.out.policy.DefaultJobPolicyAdapterOut;
 import com.async.request.reply.adapter.out.policy.DefaultJobSubmissionPolicyAdapterOut;
@@ -10,16 +9,15 @@ import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
 import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
 import com.async.request.reply.spi.Routine;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.scheduling.annotation.EnableAsync;
-import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 
@@ -55,22 +53,14 @@ public class AsyncJobsAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     JobProcessorPortOut jobProcessorPortOut(JobHandlerRegistry registry,
-                                            ObjectMapper objectMapper,
-                                            JobRepositoryPortOut repository) {
-        return new AsyncJobProcessorAdapterOut(registry, objectMapper, repository);
+                                            JobRepositoryPortOut repository,
+                                            JobResultStorePortOut resultStore) {
+        return new AsyncJobProcessorAdapterOut(registry, repository, resultStore);
     }
 
     @Bean
     @ConditionalOnMissingBean(CoalescingKeyPortOut.class)
-    @ConditionalOnProperty(name = "async-jobs.coalesce-key", havingValue = "type", matchIfMissing = true)
     CoalescingKeyPortOut typeCoalescingKeyPortOut() {
         return new TypeCoalescingKeyAdapterOut();
-    }
-
-    @Bean
-    @ConditionalOnMissingBean(CoalescingKeyPortOut.class)
-    @ConditionalOnProperty(name = "async-jobs.coalesce-key", havingValue = "payload")
-    CoalescingKeyPortOut payloadCoalescingKeyPortOut(ObjectMapper objectMapper) {
-        return new PayloadCoalescingKeyAdapterOut(objectMapper);
     }
 }

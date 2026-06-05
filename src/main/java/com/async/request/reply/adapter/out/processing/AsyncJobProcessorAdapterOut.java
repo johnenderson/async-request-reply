@@ -3,13 +3,14 @@ package com.async.request.reply.adapter.out.processing;
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.spi.AsyncJobHandler;
 import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobHandler;
 import com.async.request.reply.spi.Routine;
 import org.springframework.scheduling.annotation.Async;
-import org.springframework.core.ResolvableType;
-import tools.jackson.databind.ObjectMapper;
+
+import java.util.List;
 
 /**
  * Adapter out: implementação do {@link JobProcessorPortOut} que despacha o job
@@ -24,14 +25,14 @@ import tools.jackson.databind.ObjectMapper;
 public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
 
     private final JobHandlerRegistry registry;
-    private final ObjectMapper objectMapper;
     private final JobRepositoryPortOut repository;
+    private final JobResultStorePortOut resultStore;
 
-    public AsyncJobProcessorAdapterOut(JobHandlerRegistry registry, ObjectMapper objectMapper,
-                                       JobRepositoryPortOut repository) {
+    public AsyncJobProcessorAdapterOut(JobHandlerRegistry registry, JobRepositoryPortOut repository,
+                                       JobResultStorePortOut resultStore) {
         this.registry = registry;
-        this.objectMapper = objectMapper;
         this.repository = repository;
+        this.resultStore = resultStore;
     }
 
     @Override
@@ -56,8 +57,8 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
 
         try {
             switch (routine) {
-                case JobHandler<?, ?> sync -> runSync(sync, job);
-                case AsyncJobHandler<?> async -> runAsync(async, job);
+                case JobHandler<?> sync -> runSync(sync, job);
+                case AsyncJobHandler async -> runAsync(async, job);
                 default -> repository.fail(job.getId(), "Unsupported routine",
                         "Tipo de routine não suportado: " + routine.getClass());
             }
@@ -66,28 +67,22 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private void runSync(JobHandler<?, ?> handler, Job job) {
-        Object input = convertPayload(job.getPayload(), handler, JobHandler.class);
-        Object result = ((JobHandler<Object, ?>) handler).handle(input);
-        repository.complete(job.getId(), result); // atômico: ignora se já cancelado
+    private void runSync(JobHandler<?> handler, Job job) {
+        Object result = handler.handle();
+        resultStore.append(job.getId(), asList(result)); // materializa o resultado (paginável)
+        repository.complete(job.getId());                // atômico: ignora se já cancelado
     }
 
-    @SuppressWarnings("unchecked")
-    private void runAsync(AsyncJobHandler<?> handler, Job job) {
-        Object input = convertPayload(job.getPayload(), handler, AsyncJobHandler.class);
+    /** Normaliza o resultado: null → vazio, List → como está, valor único → lista de 1. */
+    private static List<?> asList(Object result) {
+        if (result == null) return List.of();
+        if (result instanceof List<?> list) return list;
+        return List.of(result);
+    }
+
+    private void runAsync(AsyncJobHandler handler, Job job) {
         JobContext ctx = job::getId; // expõe apenas o jobId
-        ((AsyncJobHandler<Object>) handler).start(ctx, input);
+        handler.start(ctx);
         // NÃO completa: aguarda JobReporter.complete(jobId, ...) do worker
-    }
-
-    /** Converte o payload JSON para o tipo de input declarado pela routine. */
-    private Object convertPayload(Object payload, Routine routine, Class<?> spi) {
-        Class<?> inputType = ResolvableType.forClass(spi, routine.getClass())
-                .getGeneric(0).resolve();
-        if (inputType == null || inputType == Object.class || payload == null) {
-            return payload;
-        }
-        return objectMapper.convertValue(payload, inputType);
     }
 }

@@ -8,14 +8,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
-import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -53,10 +51,10 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
     @TestConfiguration
     static class Handlers {
         @Bean
-        JobHandler<Map<String, Object>, List<String>> slowSfHandler() {
+        JobHandler<List<String>> slowSfHandler() {
             return new JobHandler<>() {
                 public String type() { return "sf-test"; }
-                public List<String> handle(Map<String, Object> in) {
+                public List<String> handle() {
                     try { GATE.get().await(2, TimeUnit.SECONDS); }
                     catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                     return List.of("ativos", "inativos");
@@ -67,15 +65,14 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
 
     @Test
     void sameTypeWhileActiveReturnsSameJobId() throws Exception {
-        // payloads diferentes — não importa: a chave é só o type
-        String id1 = submit("{\"type\":\"sf-test\",\"payload\":{\"filtro\":\"ativos\"}}");
-        String id2 = submit("{\"type\":\"sf-test\",\"payload\":{\"filtro\":\"inativos\"}}");
+        String id1 = submit();
+        String id2 = submit();
 
         assertEquals(id1, id2, "mesmo type em andamento deve retornar o mesmo jobId");
     }
 
-    private String submit(String body) throws Exception {
-        MvcResult r = mvc.perform(post("/jobs").contentType(MediaType.APPLICATION_JSON).content(body))
+    private String submit() throws Exception {
+        MvcResult r = mvc.perform(post("/jobs/sf-test"))
                 .andExpect(status().isAccepted()).andReturn();
         return r.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
     }

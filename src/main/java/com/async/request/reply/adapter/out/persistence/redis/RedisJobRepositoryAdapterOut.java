@@ -11,7 +11,6 @@ import org.redisson.api.RLock;
 import org.redisson.api.RMap;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
-import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -43,25 +42,22 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
             Set.of(JobStatus.PENDING.name(), JobStatus.PROCESSING.name());
 
     private final RedissonClient redisson;
-    private final ObjectMapper objectMapper;
     private final RedisJobMapper jobMapper;
     private final Duration retention;
 
-    public RedisJobRepositoryAdapterOut(RedissonClient redisson, 
-                                         ObjectMapper objectMapper,
-                                         RedisJobMapper jobMapper,
-                                         AsyncJobsProperties properties) {
+    public RedisJobRepositoryAdapterOut(RedissonClient redisson,
+                                        RedisJobMapper jobMapper,
+                                        AsyncJobsProperties properties) {
         this.redisson = redisson;
-        this.objectMapper = objectMapper;
         this.jobMapper = jobMapper;
         this.retention = properties.resultTtl();
     }
 
     @Override
-    public Job create(String id, String type, Object payload, String idempotencyKey) {
+    public Job create(String id, String type, String idempotencyKey) {
         if (idempotencyKey == null) {
-            writeHash(id, type, payload);
-            return new Job(id, type, payload);
+            writeHash(id, type);
+            return new Job(id, type);
         }
 
         RLock lock = redisson.getLock(IDEM_LOCK_PREFIX + idempotencyKey);
@@ -77,9 +73,9 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
                 idem.delete();
             }
 
-            writeHash(id, type, payload);
+            writeHash(id, type);
             idem.set(id, retention);
-            return new Job(id, type, payload);
+            return new Job(id, type);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
@@ -87,8 +83,8 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
         }
     }
 
-    private void writeHash(String id, String type, Object payload) {
-        Map<String, String> fields = RedisJobHash.pending(type, json(payload), Instant.now()).toMap();
+    private void writeHash(String id, String type) {
+        Map<String, String> fields = RedisJobHash.pending(type, Instant.now()).toMap();
         RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
         map.putAll(fields);
         map.expire(retention);
@@ -114,8 +110,8 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
     }
 
     @Override
-    public boolean complete(String id, Object result) {
-        return transition(id, ACTIVE, RedisJobHash.completed(json(result), Instant.now()).toMap());
+    public boolean complete(String id) {
+        return transition(id, ACTIVE, RedisJobHash.completed(Instant.now()).toMap());
     }
 
     @Override
@@ -162,10 +158,6 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
                 lock.unlock();
             }
         }
-    }
-
-    private String json(Object value) {
-        return value == null ? "null" : objectMapper.writeValueAsString(value);
     }
 
 }

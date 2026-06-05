@@ -9,14 +9,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
-import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -57,14 +55,7 @@ class ValkeyAsyncJobIntegrationTest extends ValkeyContainerTestSupport {
 
     @Test
     void asyncRoutineCompletesThroughReporterAndReturnsPagedResultFromValkey() throws Exception {
-        MvcResult submitted = mvc.perform(post("/jobs")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "type": "tc-async",
-                                  "payload": { "accountId": "acc-42" }
-                                }
-                                """))
+        MvcResult submitted = mvc.perform(post("/jobs/tc-async"))
                 .andExpect(status().isAccepted())
                 .andExpect(header().exists("Location"))
                 .andExpect(header().exists("Retry-After"))
@@ -114,7 +105,7 @@ class ValkeyAsyncJobIntegrationTest extends ValkeyContainerTestSupport {
         }
     }
 
-    static class CapturingAsyncRoutine implements AsyncJobHandler<Map<String, Object>> {
+    static class CapturingAsyncRoutine implements AsyncJobHandler {
 
         private final BlockingQueue<String> jobIds = new ArrayBlockingQueue<>(1);
 
@@ -124,7 +115,7 @@ class ValkeyAsyncJobIntegrationTest extends ValkeyContainerTestSupport {
         }
 
         @Override
-        public void start(JobContext ctx, Map<String, Object> input) {
+        public void start(JobContext ctx) {
             jobIds.offer(ctx.jobId());
         }
 

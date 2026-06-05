@@ -24,7 +24,6 @@ public class JobResponseMapper {
         return new JobStatusResponse(
                 status.jobId(),
                 status.status(),
-                status.result(),
                 status.createdAt(),
                 status.lastUpdatedAt(),
                 status.percentComplete());

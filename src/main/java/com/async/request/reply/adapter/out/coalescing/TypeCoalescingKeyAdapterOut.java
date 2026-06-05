@@ -5,14 +5,13 @@ import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
 /**
  * Adapter out: chave de coalescing baseada apenas no {@code type} (default).
  *
- * <p>Adequado quando o job é parameterless — sempre produz o mesmo resultado
- * para um type (ex: "listar todas as contas"); a filtragem é feita na leitura
- * do resultado, não na submissão. Selecionável via {@code async-jobs.coalesce-key=type}.
+ * <p>Adequado ao contrato web default: o submit apenas materializa o resultado
+ * base daquele tipo; filtros são aplicados na leitura do resultado.
  */
 public class TypeCoalescingKeyAdapterOut implements CoalescingKeyPortOut {
 
     @Override
-    public String keyFor(String type, Object payload) {
+    public String keyFor(String type) {
         return type;
     }
 }
