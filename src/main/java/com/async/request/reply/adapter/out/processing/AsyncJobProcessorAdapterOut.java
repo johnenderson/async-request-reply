@@ -10,6 +10,7 @@ import com.async.request.reply.spi.JobHandler;
 import com.async.request.reply.spi.Routine;
 import org.springframework.scheduling.annotation.Async;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -73,10 +74,10 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
         repository.complete(job.getId());                // atômico: ignora se já cancelado
     }
 
-    /** Normaliza o resultado: null → vazio, List → como está, valor único → lista de 1. */
-    private static List<?> asList(Object result) {
+    /** Normaliza o resultado: null → vazio, List → cópia, valor único → lista de 1. */
+    private static List<Object> asList(Object result) {
         if (result == null) return List.of();
-        if (result instanceof List<?> list) return list;
+        if (result instanceof List<?> list) return new ArrayList<>(list);
         return List.of(result);
     }
 

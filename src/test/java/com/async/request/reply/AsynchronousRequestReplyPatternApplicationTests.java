@@ -89,7 +89,7 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 public List<String> handle() {
                     // bloqueia até o teste liberar — mantém o job ativo de forma determinística
                     try { SLOW_GATE.get().await(10, TimeUnit.SECONDS); }
-                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    catch (InterruptedException _) { Thread.currentThread().interrupt(); }
                     return List.of("done");
                 }
             };

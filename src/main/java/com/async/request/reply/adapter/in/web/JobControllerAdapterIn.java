@@ -96,19 +96,19 @@ public class JobControllerAdapterIn {
                     .header("Expires", v.expiresAt().toString())
                     .body(responseMapper.toStatusResponse(v));
 
-            case JobStatusView.Completed v -> ResponseEntity.status(HttpStatus.SEE_OTHER) // 303
+            case JobStatusView.Completed(var expiresAt) -> ResponseEntity.status(HttpStatus.SEE_OTHER) // 303
                     .location(uris.result(id))
-                    .header("Expires", v.expiresAt().toString())
+                    .header("Expires", expiresAt.toString())
                     .build();
 
-            case JobStatusView.Failed v -> {
-                ProblemDetail problem = problemMapper.toProblemDetail(v.error()); // domínio → HTTP
+            case JobStatusView.Failed(var error) -> {
+                ProblemDetail problem = problemMapper.toProblemDetail(error); // domínio → HTTP
                 problem.setInstance(uris.status(id));
                 yield ResponseEntity.status(problem.getStatus()).body(problem); // 422
             }
 
-            case JobStatusView.Cancelled ignored -> ResponseEntity.status(HttpStatus.GONE).build(); // 410
-            case JobStatusView.NotFound ignored -> ResponseEntity.notFound().build();               // 404
+            case JobStatusView.Cancelled _ -> ResponseEntity.status(HttpStatus.GONE).build(); // 410
+            case JobStatusView.NotFound _ -> ResponseEntity.notFound().build();               // 404
         };
     }
 
@@ -120,13 +120,13 @@ public class JobControllerAdapterIn {
             @RequestParam(defaultValue = "20") int size) {
 
         int safePage = Math.max(page, 0);
-        int safeSize = Math.min(Math.max(size, 1), MAX_PAGE_SIZE); // teto de página
+        int safeSize = Math.clamp(size, 1, MAX_PAGE_SIZE); // 1..teto de página
 
         return switch (getJobResult.execute(id, safePage, safeSize)) {
             case JobResultView.Found v -> ResponseEntity.ok(responseMapper.toResultResponse(v));
             case JobResultView.NotCompleted v -> ResponseEntity.status(HttpStatus.CONFLICT) // 409
                     .body(responseMapper.toNotCompletedResponse(v));
-            case JobResultView.NotFound ignored -> ResponseEntity.notFound().build();       // 404
+            case JobResultView.NotFound _ -> ResponseEntity.notFound().build();       // 404
         };
     }
 

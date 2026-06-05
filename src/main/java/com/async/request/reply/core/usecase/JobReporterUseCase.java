@@ -5,6 +5,7 @@ import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.spi.JobReporter;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -49,10 +50,10 @@ public class JobReporterUseCase implements JobReporter {
         repository.fail(jobId, title, detail);
     }
 
-    /** Normaliza o resultado: null → vazio, List → como está, valor único → lista de 1. */
-    static List<?> asList(Object result) {
+    /** Normaliza o resultado: null → vazio, List → cópia, valor único → lista de 1. */
+    static List<Object> asList(Object result) {
         if (result == null) return List.of();
-        if (result instanceof List<?> list) return list;
+        if (result instanceof List<?> list) return new ArrayList<>(list);
         return List.of(result);
     }
 }

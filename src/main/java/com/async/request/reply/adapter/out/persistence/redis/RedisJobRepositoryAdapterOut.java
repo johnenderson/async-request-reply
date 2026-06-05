@@ -139,14 +139,14 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
             // espera até 2s; SEM lease fixo → watchdog do Redisson renova o lock
             // enquanto a thread o mantém (evita expirar no meio da seção crítica).
             locked = lock.tryLock(2, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             return false;
         }
         if (!locked) return false;
         try {
             RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
-            String status = map.get("status");
+            String status = map.get(RedisJobHash.FIELD_STATUS);
             if (status == null || !allowedFrom.contains(status)) {
                 return false; // não existe ou já terminal — não sobrescreve
             }
