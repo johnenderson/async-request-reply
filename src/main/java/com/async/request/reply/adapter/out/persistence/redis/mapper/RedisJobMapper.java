@@ -11,17 +11,17 @@ import java.util.Map;
 public class RedisJobMapper {
 
     public Job toDomain(String id, Map<String, String> h) {
-        String errorTitle = h.get("errorTitle");
+        String errorTitle = h.get(RedisJobHash.FIELD_ERROR_TITLE);
         JobFailedException failure = (errorTitle != null && !errorTitle.isBlank())
-                ? new JobFailedException(errorTitle, h.get("errorDetail"))
+                ? new JobFailedException(errorTitle, h.get(RedisJobHash.FIELD_ERROR_DETAIL))
                 : null;
-        String percent = h.get("percentComplete");
+        String percent = h.get(RedisJobHash.FIELD_PERCENT_COMPLETE);
         return Job.restore(
                 id,
-                h.get(RedisJobHash.TYPE),
-                JobStatus.valueOf(h.get(RedisJobHash.STATUS)),
-                Instant.parse(h.get(RedisJobHash.CREATED_AT)),
-                Instant.parse(h.get(RedisJobHash.LAST_UPDATED_AT)),
+                h.get(RedisJobHash.FIELD_TYPE),
+                JobStatus.valueOf(h.get(RedisJobHash.FIELD_STATUS)),
+                Instant.parse(h.get(RedisJobHash.FIELD_CREATED_AT)),
+                Instant.parse(h.get(RedisJobHash.FIELD_LAST_UPDATED_AT)),
                 failure,
                 percent == null ? null : Integer.valueOf(percent));
     }

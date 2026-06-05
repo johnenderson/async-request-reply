@@ -146,7 +146,7 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
         if (!locked) return false;
         try {
             RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
-            String status = map.get("status");
+            String status = map.get(RedisJobHash.FIELD_STATUS);
             if (status == null || !allowedFrom.contains(status)) {
                 return false; // não existe ou já terminal — não sobrescreve
             }

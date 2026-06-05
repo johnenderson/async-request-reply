@@ -19,13 +19,13 @@ public record RedisJobHash(
         String errorDetail,
         String percentComplete) {
 
-    public static final String TYPE = "type";
-    public static final String STATUS = "status";
-    public static final String CREATED_AT = "createdAt";
-    public static final String LAST_UPDATED_AT = "lastUpdatedAt";
-    public static final String ERROR_TITLE = "errorTitle";
-    public static final String ERROR_DETAIL = "errorDetail";
-    public static final String PERCENT_COMPLETE = "percentComplete";
+    public static final String FIELD_TYPE = "type";
+    public static final String FIELD_STATUS = "status";
+    public static final String FIELD_CREATED_AT = "createdAt";
+    public static final String FIELD_LAST_UPDATED_AT = "lastUpdatedAt";
+    public static final String FIELD_ERROR_TITLE = "errorTitle";
+    public static final String FIELD_ERROR_DETAIL = "errorDetail";
+    public static final String FIELD_PERCENT_COMPLETE = "percentComplete";
 
     public static RedisJobHash pending(String type, Instant now) {
         return new RedisJobHash(type, JobStatus.PENDING.name(), now.toString(), now.toString(),
@@ -57,13 +57,13 @@ public record RedisJobHash(
 
     public Map<String, String> toMap() {
         Map<String, String> fields = new LinkedHashMap<>();
-        putIfPresent(fields, TYPE, type);
-        putIfPresent(fields, STATUS, status);
-        putIfPresent(fields, CREATED_AT, createdAt);
-        putIfPresent(fields, LAST_UPDATED_AT, lastUpdatedAt);
-        putIfPresent(fields, ERROR_TITLE, errorTitle);
-        putIfPresent(fields, ERROR_DETAIL, errorDetail);
-        putIfPresent(fields, PERCENT_COMPLETE, percentComplete);
+        putIfPresent(fields, FIELD_TYPE, type);
+        putIfPresent(fields, FIELD_STATUS, status);
+        putIfPresent(fields, FIELD_CREATED_AT, createdAt);
+        putIfPresent(fields, FIELD_LAST_UPDATED_AT, lastUpdatedAt);
+        putIfPresent(fields, FIELD_ERROR_TITLE, errorTitle);
+        putIfPresent(fields, FIELD_ERROR_DETAIL, errorDetail);
+        putIfPresent(fields, FIELD_PERCENT_COMPLETE, percentComplete);
         return fields;
     }
 
