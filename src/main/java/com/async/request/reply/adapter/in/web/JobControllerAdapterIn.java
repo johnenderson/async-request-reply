@@ -36,6 +36,9 @@ public class JobControllerAdapterIn {
 
     private static final String TYPE_PATTERN = "[A-Za-z0-9._-]+";
 
+    /** Teto do tamanho de página, para proteger latência/memória independente do cliente. */
+    private static final int MAX_PAGE_SIZE = 200;
+
     private final SubmitJobPortIn submitJob;
     private final GetJobStatusPortIn getJobStatus;
     private final GetJobResultPortIn getJobResult;
@@ -116,7 +119,10 @@ public class JobControllerAdapterIn {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        return switch (getJobResult.execute(id, page, size)) {
+        int safePage = Math.max(page, 0);
+        int safeSize = Math.min(Math.max(size, 1), MAX_PAGE_SIZE); // teto de página
+
+        return switch (getJobResult.execute(id, safePage, safeSize)) {
             case JobResultView.Found v -> ResponseEntity.ok(responseMapper.toResultResponse(v));
             case JobResultView.NotCompleted v -> ResponseEntity.status(HttpStatus.CONFLICT) // 409
                     .body(responseMapper.toNotCompletedResponse(v));
