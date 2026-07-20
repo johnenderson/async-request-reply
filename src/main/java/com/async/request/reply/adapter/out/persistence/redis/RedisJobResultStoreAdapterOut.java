@@ -1,6 +1,6 @@
 package com.async.request.reply.adapter.out.persistence.redis;
 
-import com.async.request.reply.autoconfigure.AsyncJobsProperties;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.result.JobResultPage;
 import org.redisson.api.RList;

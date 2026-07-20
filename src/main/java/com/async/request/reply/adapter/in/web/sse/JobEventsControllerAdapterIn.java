@@ -3,7 +3,7 @@ package com.async.request.reply.adapter.in.web.sse;
 import com.async.request.reply.adapter.in.web.dto.JobEventCompleteResponse;
 import com.async.request.reply.adapter.in.web.dto.JobEventStatusResponse;
 import com.async.request.reply.adapter.in.web.uribuilder.JobUriBuilder;
-import com.async.request.reply.autoconfigure.AsyncJobsProperties;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.event.JobEvent;
 import com.async.request.reply.core.port.in.WatchJobPortIn;
 import com.async.request.reply.core.result.JobWatchView;

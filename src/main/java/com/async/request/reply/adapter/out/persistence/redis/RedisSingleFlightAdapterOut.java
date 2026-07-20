@@ -1,6 +1,6 @@
 package com.async.request.reply.adapter.out.persistence.redis;
 
-import com.async.request.reply.autoconfigure.AsyncJobsProperties;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.port.out.SingleFlightPortOut;
 import org.redisson.api.RBucket;
 import org.redisson.api.RLock;

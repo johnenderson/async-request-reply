@@ -1,6 +1,6 @@
 package com.async.request.reply.adapter.out.persistence.redis;
 
-import com.async.request.reply.autoconfigure.AsyncJobsProperties;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.adapter.out.persistence.redis.dto.RedisJobHash;
 import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapper;
 import com.async.request.reply.core.domain.Job;
@@ -138,7 +138,10 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
     @Override
     public boolean progress(String id, int percent) {
-        return transition(id, ACTIVE, RedisJobHash.progress(percent, Instant.now()).toMap());
+        // apenas PROCESSING: progresso implica execução em andamento, e o
+        // evento publicado nunca anuncia um status diferente do persistido
+        return transition(id, Set.of(JobStatus.PROCESSING.name()),
+                RedisJobHash.progress(percent, Instant.now()).toMap());
     }
 
     // --- helpers -----------------------------------------------------------

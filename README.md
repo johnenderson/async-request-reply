@@ -163,8 +163,10 @@ Decisao registrada em `docs/adr/0002-sse-para-notificacao-de-jobs.md`.
 ### Cancelar um job
 
 ```http
-DELETE /jobs/{id}/status
+DELETE /jobs/{id}
 ```
+
+A rota `DELETE /jobs/{id}/status` (contrato original) segue aceita como alias.
 
 Possiveis respostas:
 
@@ -230,7 +232,7 @@ proprio e reportar `fail` em caso de erro.
 - **Polling hint**: respostas usam `Retry-After` para orientar quando o client deve consultar novamente.
 - **Retencao**: jobs sao mantidos no Valkey/Redis pelo TTL `async-jobs.result-ttl` (padrao: 1 hora).
 - **Single-flight opcional**: `async-jobs.coalesce-in-flight=true` permite colapsar requests equivalentes enquanto ha job ativo. O guard e liberado assim que o job atinge estado terminal (complete/fail/cancel), sem esperar o TTL.
-- **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente.
+- **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente. Reusar a mesma key com um `type` diferente e rejeitado com `422` (a key so vale para retries da MESMA operacao).
 - **Problem Details**: falhas de dominio sao traduzidas para `ProblemDetail`.
 - **Resultado paginado**: listas retornadas pelos handlers sao expostas com `page`, `size`, `totalElements` e `totalPages`.
 
@@ -325,7 +327,10 @@ A suite de testes registra handlers de exemplo e cobre:
 - resultado paginado;
 - cancelamento;
 - `404 Not Found` para job inexistente;
-- single-flight (coalescing) e fluxo fire-and-forget via `JobReporter`.
+- single-flight (coalescing), inclusive com submits concorrentes;
+- job com falha (`422` + Problem Detail no status);
+- conflito de `Idempotency-Key` reusada com outro `type` (`422`);
+- fluxo fire-and-forget via `JobReporter`.
 
 Alem dos testes MockMvc, `TomcatEndToEndIntegrationTest` sobe um Tomcat real
 em porta aleatoria (`webEnvironment = RANDOM_PORT`) e exercita o fluxo
@@ -340,4 +345,4 @@ Ultima verificacao local:
 ./mvnw test
 ```
 
-Resultado: `Tests run: 29, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 33, Failures: 0, Errors: 0, Skipped: 0`.

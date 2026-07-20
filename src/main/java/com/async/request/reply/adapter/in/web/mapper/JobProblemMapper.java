@@ -16,6 +16,9 @@ public class JobProblemMapper {
     public ProblemDetail toProblemDetail(JobException ex) {
         HttpStatus status = switch (ex.errorType()) {
             case VALIDATION -> HttpStatus.BAD_REQUEST;            // 400
+            // 422 para key reusada com request diferente, seguindo o draft
+            // IETF do header Idempotency-Key
+            case CONFLICT   -> HttpStatus.UNPROCESSABLE_CONTENT;  // 422
             case FAILED     -> HttpStatus.UNPROCESSABLE_CONTENT;  // 422
             case INTERNAL   -> HttpStatus.INTERNAL_SERVER_ERROR; // 500
         };

@@ -2,11 +2,9 @@ package com.async.request.reply.core.usecase;
 
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.CancelResult;
-import com.async.request.reply.core.enums.JobStatus;
-import com.async.request.reply.core.event.JobEvent;
 import com.async.request.reply.core.port.in.CancelJobPortIn;
-import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import com.async.request.reply.core.service.JobTerminalTransitionService;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -18,15 +16,12 @@ import java.util.Optional;
 public class CancelJobUseCase implements CancelJobPortIn {
 
     private final JobRepositoryPortOut repository;
-    private final ReleaseSingleFlightUseCase releaseSingleFlight;
-    private final JobEventPublisherPortOut events;
+    private final JobTerminalTransitionService terminal;
 
     public CancelJobUseCase(JobRepositoryPortOut repository,
-                            ReleaseSingleFlightUseCase releaseSingleFlight,
-                            JobEventPublisherPortOut events) {
+                            JobTerminalTransitionService terminal) {
         this.repository = repository;
-        this.releaseSingleFlight = releaseSingleFlight;
-        this.events = events;
+        this.terminal = terminal;
     }
 
     @Override
@@ -36,11 +31,6 @@ public class CancelJobUseCase implements CancelJobPortIn {
             return CancelResult.NOT_FOUND;
         }
         // transição atômica; false = já terminal
-        if (!repository.cancel(id)) {
-            return CancelResult.ALREADY_TERMINAL;
-        }
-        events.publish(new JobEvent(id, JobStatus.CANCELLED, null));
-        releaseSingleFlight.release(job.get());
-        return CancelResult.CANCELLED;
+        return terminal.cancel(job.get()) ? CancelResult.CANCELLED : CancelResult.ALREADY_TERMINAL;
     }
 }

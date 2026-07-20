@@ -2,6 +2,7 @@ package com.async.request.reply.core.usecase;
 
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.JobStatus;
+import com.async.request.reply.core.exception.IdempotencyKeyConflictException;
 import com.async.request.reply.core.exception.InvalidJobRequestException;
 import com.async.request.reply.core.port.in.SubmitJobPortIn;
 import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
@@ -53,6 +54,7 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
         if (idempotencyKey != null) {
             Optional<Job> existing = repository.findByIdempotencyKey(idempotencyKey);
             if (existing.isPresent()) {
+                ensureSameType(existing.get(), type);
                 return submitted(existing.get().getId());
             }
         }
@@ -84,6 +86,9 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
         String id = UUID.randomUUID().toString();
         Job job = repository.create(id, type, idempotencyKey);
         boolean fresh = job.getId().equals(id);
+        if (!fresh) {
+            ensureSameType(job, type); // dedupe de idempotência venceu a corrida
+        }
         if (fresh && singleFlightKey != null) {
             singleFlight.claim(singleFlightKey, id);
         }
@@ -91,6 +96,18 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
             processor.process(job); // via Spring proxy → @Async funciona
         }
         return job;
+    }
+
+    /**
+     * Idempotency-Key só pode ser reusada para retries da MESMA operação:
+     * a mesma key com outro {@code type} devolveria um job do tipo errado.
+     */
+    private static void ensureSameType(Job existing, String requestedType) {
+        if (!existing.getType().equals(requestedType)) {
+            throw new IdempotencyKeyConflictException(
+                    "Idempotency-Key já usada para o type '" + existing.getType()
+                            + "'; não pode ser reusada para o type '" + requestedType + "'.");
+        }
     }
 
     /**

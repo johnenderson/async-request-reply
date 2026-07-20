@@ -138,8 +138,8 @@ public class JobControllerAdapterIn {
         };
     }
 
-    // DELETE /jobs/{id}/status
-    @DeleteMapping("/{id}/status")
+    // DELETE /jobs/{id} (canônico) e /jobs/{id}/status (compat com o contrato original)
+    @DeleteMapping({"/{id}", "/{id}/status"})
     public ResponseEntity<Void> cancel(@PathVariable String id) {
         return switch (cancelJob.execute(id)) {
             case CANCELLED -> ResponseEntity.accepted().build();                   // 202

@@ -5,6 +5,7 @@ import com.async.request.reply.adapter.out.persistence.redis.RedisJobRepositoryA
 import com.async.request.reply.adapter.out.persistence.redis.RedisJobResultStoreAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.RedisSingleFlightAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapper;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
 import com.async.request.reply.core.port.out.JobEventSubscriberPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;

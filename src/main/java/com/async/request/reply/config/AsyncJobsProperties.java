@@ -1,4 +1,4 @@
-package com.async.request.reply.autoconfigure;
+package com.async.request.reply.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -8,6 +8,9 @@ import java.time.Duration;
  * Propriedades da biblioteca. Valores ausentes assumem defaults; valores
  * explicitamente inválidos falham o startup (fail-fast) em vez de serem
  * silenciosamente corrigidos.
+ *
+ * <p>Mora em um pacote neutro ({@code config}) para os adapters não
+ * dependerem do pacote {@code autoconfigure}.</p>
  */
 @ConfigurationProperties(prefix = "async-jobs")
 public record AsyncJobsProperties(

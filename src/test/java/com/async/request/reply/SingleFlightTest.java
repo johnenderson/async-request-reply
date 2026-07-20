@@ -15,6 +15,9 @@ import org.springframework.web.context.WebApplicationContext;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -69,6 +72,27 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
         String id2 = submit();
 
         assertEquals(id1, id2, "mesmo type em andamento deve retornar o mesmo jobId");
+    }
+
+    /**
+     * Regressão da corrida claim × persistência: dois submits SIMULTÂNEOS do
+     * mesmo type não podem criar dois jobs (peek → create → claim roda sob o
+     * lock distribuído da chave).
+     */
+    @Test
+    void concurrentSubmitsOfSameTypeShareSameJobId() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<String> first = pool.submit(() -> { start.await(); return submit(); });
+            Future<String> second = pool.submit(() -> { start.await(); return submit(); });
+            start.countDown();
+
+            assertEquals(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS),
+                    "submits concorrentes do mesmo type devem colapsar no mesmo jobId");
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     private String submit() throws Exception {

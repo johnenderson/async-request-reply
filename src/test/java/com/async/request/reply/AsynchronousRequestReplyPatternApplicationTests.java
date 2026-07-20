@@ -129,6 +129,14 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 public List<String> handle() { return List.of("ok"); }
             };
         }
+
+        @Bean
+        JobHandler<List<String>> failingHandler() {
+            return new JobHandler<>() {
+                public String type() { return "fail-test"; }
+                public List<String> handle() { throw new IllegalStateException("boom simulado"); }
+            };
+        }
     }
 
     // 1. POST /jobs/{type} — 202 + Location + Retry-After
@@ -295,6 +303,44 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 .andExpect(status().isAccepted());
     }
 
+    // 12. Handler que lança exceção → job FAILED → status 422 com Problem Detail
+    @Test
+    void failedJobReturns422ProblemDetailOnStatus() throws Exception {
+        MvcResult post = mvc.perform(post("/jobs/fail-test"))
+                .andExpect(status().isAccepted()).andReturn();
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+
+        awaitStatusCode(jobId, 422);
+
+        mvc.perform(get("/jobs/{id}/status", jobId))
+                .andExpect(status().is(422))
+                .andExpect(jsonPath("$.title", is("Processing error")))
+                .andExpect(jsonPath("$.detail", containsString("boom simulado")));
+    }
+
+    // 13. Idempotency-Key reusada com OUTRO type → 422 (nunca devolve job do tipo errado)
+    @Test
+    void idempotencyKeyReusedWithDifferentTypeIsRejected() throws Exception {
+        mvc.perform(post("/jobs/test").header("Idempotency-Key", "cross-type-key"))
+                .andExpect(status().isAccepted());
+
+        mvc.perform(post("/jobs/idempotent-test").header("Idempotency-Key", "cross-type-key"))
+                .andExpect(status().is(422))
+                .andExpect(jsonPath("$.title", is("Idempotency-Key conflict")))
+                .andExpect(jsonPath("$.detail", containsString("idempotent-test")));
+    }
+
+    // 14. Cancelamento também pela rota canônica DELETE /jobs/{id}
+    @Test
+    void cancelViaCanonicalRouteReturns202ThenGone() throws Exception {
+        MvcResult post = mvc.perform(post("/jobs/cancel-test"))
+                .andExpect(status().isAccepted()).andReturn();
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+
+        mvc.perform(delete("/jobs/{id}", jobId)).andExpect(status().isAccepted());
+        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isGone());
+    }
+
     // 8. Fire-and-forget: handler async + conclusão via JobReporter
     @Test
     void asyncHandlerCompletesViaReporter() throws Exception {
@@ -323,6 +369,13 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
         Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(100))
                 .until(() -> mvc.perform(get("/jobs/{id}/status", jobId))
                         .andReturn().getResponse().getStatus() == 303);
+    }
+
+    /** Aguarda o status endpoint responder o código informado. */
+    private void awaitStatusCode(String jobId, int expected) {
+        Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(100))
+                .until(() -> mvc.perform(get("/jobs/{id}/status", jobId))
+                        .andReturn().getResponse().getStatus() == expected);
     }
 
     /** Aguarda o status (corpo) atingir o valor informado. */
