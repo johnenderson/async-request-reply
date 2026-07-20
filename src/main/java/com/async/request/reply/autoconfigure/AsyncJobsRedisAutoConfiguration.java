@@ -1,9 +1,13 @@
 package com.async.request.reply.autoconfigure;
 
+import com.async.request.reply.adapter.out.persistence.redis.RedisJobEventsAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.RedisJobRepositoryAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.RedisJobResultStoreAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.RedisSingleFlightAdapterOut;
 import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapper;
+import com.async.request.reply.config.AsyncJobsProperties;
+import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
+import com.async.request.reply.core.port.out.JobEventSubscriberPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.SingleFlightPortOut;
@@ -52,5 +56,13 @@ public class AsyncJobsRedisAutoConfiguration {
     @ConditionalOnMissingBean
     SingleFlightPortOut singleFlightPortOut(RedissonClient redisson, AsyncJobsProperties properties) {
         return new RedisSingleFlightAdapterOut(redisson, properties);
+    }
+
+    /** Pub/sub de eventos de job — só quando o stream SSE está habilitado. */
+    @Bean
+    @ConditionalOnProperty(name = "async-jobs.sse.enabled", havingValue = "true")
+    @ConditionalOnMissingBean({JobEventPublisherPortOut.class, JobEventSubscriberPortOut.class})
+    RedisJobEventsAdapterOut redisJobEventsAdapterOut(RedissonClient redisson, ObjectMapper objectMapper) {
+        return new RedisJobEventsAdapterOut(redisson, objectMapper);
     }
 }

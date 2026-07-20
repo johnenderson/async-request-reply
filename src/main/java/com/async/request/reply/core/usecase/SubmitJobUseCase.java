@@ -2,6 +2,7 @@ package com.async.request.reply.core.usecase;
 
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.JobStatus;
+import com.async.request.reply.core.exception.IdempotencyKeyConflictException;
 import com.async.request.reply.core.exception.InvalidJobRequestException;
 import com.async.request.reply.core.port.in.SubmitJobPortIn;
 import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
@@ -53,37 +54,60 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
         if (idempotencyKey != null) {
             Optional<Job> existing = repository.findByIdempotencyKey(idempotencyKey);
             if (existing.isPresent()) {
+                ensureSameType(existing.get(), type);
                 return submitted(existing.get().getId());
             }
         }
 
-        // 2. Single-flight (coalescing): se já há um job ativo p/ a chave, retorna ele
+        // 2. Sem coalescing: cria direto
         String key = submissionPolicy.coalesceInFlight() ? coalescingKey.keyFor(type) : null;
-        if (key != null) {
+        if (key == null) {
+            return submitted(createAndDispatch(type, idempotencyKey, null).getId());
+        }
+
+        // 3. Coalescing: peek → create → claim serializados pelo lock da chave.
+        //    O claim só acontece DEPOIS de persistir, então o guard nunca aponta
+        //    para um job inexistente (elimina o take-over indevido em corrida).
+        return singleFlight.withLock(key, () -> {
             Optional<String> owner = singleFlight.peek(key).filter(this::isActive);
             if (owner.isPresent()) {
                 return submitted(owner.get());
             }
-        }
+            return submitted(createAndDispatch(type, idempotencyKey, key).getId());
+        });
+    }
 
-        // 3. Reivindica o single-flight ANTES de persistir (evita job órfão)
+    /**
+     * Cria o job (com dedupe de idempotência), reivindica o single-flight quando
+     * aplicável e dispara o processamento. O claim precede o dispatch para que a
+     * liberação do guard (na transição terminal) nunca corra antes do claim.
+     */
+    private Job createAndDispatch(String type, String idempotencyKey, String singleFlightKey) {
         String id = UUID.randomUUID().toString();
-        if (key != null) {
-            String winner = singleFlight.begin(key, id);
-            if (!winner.equals(id)) {
-                if (isActive(winner)) {
-                    return submitted(winner);            // perdeu a corrida → dedupe (nada persistido)
-                }
-                singleFlight.takeOver(key, id);          // guard obsoleto → assume
-            }
-        }
-
-        // 4. Cria (com dedupe de idempotência) e dispara o processamento
         Job job = repository.create(id, type, idempotencyKey);
-        if (job.getId().equals(id) && job.getStatus() == JobStatus.PENDING) {
+        boolean fresh = job.getId().equals(id);
+        if (!fresh) {
+            ensureSameType(job, type); // dedupe de idempotência venceu a corrida
+        }
+        if (fresh && singleFlightKey != null) {
+            singleFlight.claim(singleFlightKey, id);
+        }
+        if (fresh && job.getStatus() == JobStatus.PENDING) {
             processor.process(job); // via Spring proxy → @Async funciona
         }
-        return submitted(job.getId());
+        return job;
+    }
+
+    /**
+     * Idempotency-Key só pode ser reusada para retries da MESMA operação:
+     * a mesma key com outro {@code type} devolveria um job do tipo errado.
+     */
+    private static void ensureSameType(Job existing, String requestedType) {
+        if (!existing.getType().equals(requestedType)) {
+            throw new IdempotencyKeyConflictException(
+                    "Idempotency-Key já usada para o type '" + existing.getType()
+                            + "'; não pode ser reusada para o type '" + requestedType + "'.");
+        }
     }
 
     /**

@@ -6,6 +6,7 @@ import com.async.request.reply.adapter.in.web.dto.JobStatusResponse;
 import com.async.request.reply.adapter.in.web.dto.SubmittedJobResponse;
 import com.async.request.reply.core.result.JobResultPage;
 import com.async.request.reply.core.result.JobResultView;
+import com.async.request.reply.core.result.JobStatusSnapshot;
 import com.async.request.reply.core.result.JobStatusView;
 import com.async.request.reply.core.result.SubmittedJob;
 import org.springframework.stereotype.Component;
@@ -20,7 +21,7 @@ public class JobResponseMapper {
     }
 
     public JobStatusResponse toStatusResponse(JobStatusView.InProgress inProgress) {
-        com.async.request.reply.core.result.JobStatusResponse status = inProgress.body();
+        JobStatusSnapshot status = inProgress.body();
         return new JobStatusResponse(
                 status.jobId(),
                 status.status(),

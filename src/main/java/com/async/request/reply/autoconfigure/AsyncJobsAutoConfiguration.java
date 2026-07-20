@@ -5,12 +5,15 @@ import com.async.request.reply.adapter.out.policy.DefaultJobPolicyAdapterOut;
 import com.async.request.reply.adapter.out.policy.DefaultJobSubmissionPolicyAdapterOut;
 import com.async.request.reply.adapter.out.processing.AsyncJobProcessorAdapterOut;
 import com.async.request.reply.adapter.out.processing.JobHandlerRegistry;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
+import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
 import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
+import com.async.request.reply.core.service.JobTerminalTransitionService;
 import com.async.request.reply.spi.Routine;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -29,7 +32,7 @@ import java.util.List;
 @AutoConfiguration(after = AsyncJobsRedisAutoConfiguration.class)
 @EnableAsync
 @EnableConfigurationProperties(AsyncJobsProperties.class)
-@ComponentScan("com.async.request.reply.core.usecase")
+@ComponentScan({"com.async.request.reply.core.usecase", "com.async.request.reply.core.service"})
 public class AsyncJobsAutoConfiguration {
 
     @Bean
@@ -54,8 +57,16 @@ public class AsyncJobsAutoConfiguration {
     @ConditionalOnMissingBean
     JobProcessorPortOut jobProcessorPortOut(JobHandlerRegistry registry,
                                             JobRepositoryPortOut repository,
-                                            JobResultStorePortOut resultStore) {
-        return new AsyncJobProcessorAdapterOut(registry, repository, resultStore);
+                                            JobTerminalTransitionService terminal,
+                                            JobEventPublisherPortOut events) {
+        return new AsyncJobProcessorAdapterOut(registry, repository, terminal, events);
+    }
+
+    /** Fallback no-op: com SSE desligado, publicar eventos não custa nada. */
+    @Bean
+    @ConditionalOnMissingBean
+    JobEventPublisherPortOut jobEventPublisherPortOut() {
+        return event -> { };
     }
 
     @Bean

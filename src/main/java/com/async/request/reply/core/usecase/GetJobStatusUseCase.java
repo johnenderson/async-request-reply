@@ -4,7 +4,7 @@ import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.port.in.GetJobStatusPortIn;
 import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
-import com.async.request.reply.core.result.JobStatusResponse;
+import com.async.request.reply.core.result.JobStatusSnapshot;
 import com.async.request.reply.core.result.JobStatusView;
 import org.springframework.stereotype.Service;
 
@@ -33,7 +33,7 @@ public class GetJobStatusUseCase implements GetJobStatusPortIn {
     private JobStatusView toView(Job job) {
         return switch (job.getStatus()) {
             case PENDING, PROCESSING -> new JobStatusView.InProgress(
-                    JobStatusResponse.from(job),
+                    JobStatusSnapshot.from(job),
                     policy.retryAfterSeconds(),
                     policy.expiresAt(job)
             );

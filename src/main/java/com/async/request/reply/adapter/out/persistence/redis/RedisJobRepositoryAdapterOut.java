@@ -1,14 +1,17 @@
 package com.async.request.reply.adapter.out.persistence.redis;
 
-import com.async.request.reply.autoconfigure.AsyncJobsProperties;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.adapter.out.persistence.redis.dto.RedisJobHash;
 import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapper;
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.JobStatus;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
+import org.redisson.api.BatchOptions;
+import org.redisson.api.RBatch;
 import org.redisson.api.RBucket;
 import org.redisson.api.RLock;
 import org.redisson.api.RMap;
+import org.redisson.api.RMapAsync;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 
@@ -17,7 +20,6 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Adapter out: persistência de jobs em Valkey/Redis via API nativa do Redisson,
@@ -84,10 +86,20 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
     }
 
     private void writeHash(String id, String type) {
-        Map<String, String> fields = RedisJobHash.pending(type, Instant.now()).toMap();
-        RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
-        map.putAll(fields);
-        map.expire(retention);
+        putAllWithTtl(id, RedisJobHash.pending(type, Instant.now()).toMap());
+    }
+
+    /**
+     * HSET + EXPIRE em MULTI/EXEC: evita que uma falha entre os dois comandos
+     * deixe o hash do job sem TTL (leak permanente no Redis).
+     */
+    private void putAllWithTtl(String id, Map<String, String> fields) {
+        RBatch batch = redisson.createBatch(BatchOptions.defaults()
+                .executionMode(BatchOptions.ExecutionMode.REDIS_WRITE_ATOMIC));
+        RMapAsync<String, String> map = batch.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
+        map.putAllAsync(fields);
+        map.expireAsync(retention);
+        batch.execute();
     }
 
     @Override
@@ -126,32 +138,31 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
     @Override
     public boolean progress(String id, int percent) {
-        return transition(id, ACTIVE, RedisJobHash.progress(percent, Instant.now()).toMap());
+        // apenas PROCESSING: progresso implica execução em andamento, e o
+        // evento publicado nunca anuncia um status diferente do persistido
+        return transition(id, Set.of(JobStatus.PROCESSING.name()),
+                RedisJobHash.progress(percent, Instant.now()).toMap());
     }
 
     // --- helpers -----------------------------------------------------------
 
-    /** Check-and-set serializado por {@link RLock} (atômico entre instâncias). */
+    /**
+     * Check-and-set serializado por {@link RLock} (atômico entre instâncias).
+     * Lock bloqueante SEM lease fixo → o watchdog do Redisson renova enquanto a
+     * thread o mantém, e libera (~30s) se o holder morrer. Bloquear em vez de
+     * tryLock evita que um timeout de lock seja confundido com "já terminal"
+     * pelo caller (falso retorno {@code false}).
+     */
     private boolean transition(String id, Set<String> allowedFrom, Map<String, String> patch) {
         RLock lock = redisson.getLock(LOCK_PREFIX + id);
-        boolean locked;
-        try {
-            // espera até 2s; SEM lease fixo → watchdog do Redisson renova o lock
-            // enquanto a thread o mantém (evita expirar no meio da seção crítica).
-            locked = lock.tryLock(2, TimeUnit.SECONDS);
-        } catch (InterruptedException _) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
-        if (!locked) return false;
+        lock.lock();
         try {
             RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
             String status = map.get(RedisJobHash.FIELD_STATUS);
             if (status == null || !allowedFrom.contains(status)) {
                 return false; // não existe ou já terminal — não sobrescreve
             }
-            map.putAll(patch);
-            map.expire(retention);
+            putAllWithTtl(id, patch);
             return true;
         } finally {
             if (lock.isHeldByCurrentThread()) {

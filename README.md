@@ -125,17 +125,59 @@ Exemplo:
 }
 ```
 
+### Acompanhar por eventos (SSE, opcional)
+
+```http
+GET /jobs/{id}/events
+Accept: text/event-stream
+```
+
+Disponivel quando `async-jobs.sse.enabled=true`. O stream entrega um snapshot
+do estado atual e os eventos de transicao ate o estado terminal, quando o
+servidor fecha a conexao:
+
+```
+event:status
+data:{"jobId":"...","status":"PROCESSING","percentComplete":null}
+
+event:progress
+data:{"jobId":"...","status":"PROCESSING","percentComplete":40}
+
+event:complete
+data:{"jobId":"...","resultUrl":"http://localhost:8080/jobs/{id}/result"}
+```
+
+- `404 Not Found`: job inexistente.
+- Eventos possiveis: `status`, `progress`, `complete`, `failed`, `cancelled`.
+- O resultado NAO trafega pelo stream: `complete` aponta a `resultUrl` e a
+  leitura continua paginada no endpoint de resultado.
+- O polling via `GET /status` continua funcionando normalmente — SSE e um
+  transporte adicional, nao um substituto.
+- Na reconexao (automatica no `EventSource`), o servidor reenvia o snapshot;
+  como o estado e materializado, nao ha replay de eventos.
+- A notificacao atravessa instancias via pub/sub do Valkey/Redis: a transicao
+  pode acontecer em uma instancia enquanto o stream vive em outra.
+
+Decisao registrada em `docs/adr/0002-sse-para-notificacao-de-jobs.md`.
+
 ### Cancelar um job
 
 ```http
-DELETE /jobs/{id}/status
+DELETE /jobs/{id}
 ```
+
+A rota `DELETE /jobs/{id}/status` (contrato original) segue aceita como alias.
 
 Possiveis respostas:
 
 - `202 Accepted`: cancelamento aceito.
 - `409 Conflict`: job ja esta em estado terminal.
 - `404 Not Found`: job inexistente.
+
+> Nota: o cancelamento marca o job como `CANCELLED` e impede que uma conclusao
+> posterior sobrescreva o estado, mas **nao interrompe** uma execucao ja em
+> andamento — o handler continua rodando ate o fim; o resultado que ele
+> produzir e descartado pelo TTL.
 
 ## Estados do job
 
@@ -177,12 +219,20 @@ Regras importantes:
 - Se o request usar um `type` sem handler registrado, a API retorna `400 Bad Request`.
 - O retorno `R` do handler vira o resultado consultavel em `/jobs/{id}/result`.
 
+Para rotinas fire-and-forget existe a variante `AsyncJobHandler`: a lib apenas
+dispara `start(ctx)` e mantem o job em `PROCESSING` ate o worker reportar via
+`JobReporter` (`complete`/`fail`/`progress`/`append`). Atencao: se o worker
+morrer sem reportar, o job fica `PROCESSING` ate o TTL (`async-jobs.result-ttl`)
+— e, com `coalesce-in-flight=true`, novos submits daquele `type` continuarao
+colapsando nesse job "zumbi" durante esse periodo. Workers devem ter timeout
+proprio e reportar `fail` em caso de erro.
+
 ## Politicas implementadas
 
 - **Polling hint**: respostas usam `Retry-After` para orientar quando o client deve consultar novamente.
 - **Retencao**: jobs sao mantidos no Valkey/Redis pelo TTL `async-jobs.result-ttl` (padrao: 1 hora).
-- **Single-flight opcional**: `async-jobs.coalesce-in-flight=true` permite colapsar requests equivalentes enquanto ha job ativo.
-- **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente.
+- **Single-flight opcional**: `async-jobs.coalesce-in-flight=true` permite colapsar requests equivalentes enquanto ha job ativo. O guard e liberado assim que o job atinge estado terminal (complete/fail/cancel), sem esperar o TTL.
+- **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente. Reusar a mesma key com um `type` diferente e rejeitado com `422` (a key so vale para retries da MESMA operacao).
 - **Problem Details**: falhas de dominio sao traduzidas para `ProblemDetail`.
 - **Resultado paginado**: listas retornadas pelos handlers sao expostas com `page`, `size`, `totalElements` e `totalPages`.
 
@@ -219,6 +269,8 @@ Parametros proprios:
 | `async-jobs.result-ttl` | `PT1H` | Tempo de retencao dos jobs, resultados, chaves de idempotencia e controle single-flight no Valkey/Redis. Tambem e usado para calcular o header `Expires` a partir da ultima atualizacao do job. Aceita formato `Duration` do Spring, como `PT10M`, `PT1H` ou `P1D`. |
 | `async-jobs.retry-after-seconds` | `5` | Hint enviado no header `Retry-After` em submissao e consulta de status enquanto o job esta ativo. Orienta o client sobre quantos segundos esperar antes do proximo polling. |
 | `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
+| `async-jobs.sse.enabled` | `false` | Liga o stream de eventos `GET /jobs/{id}/events` (SSE) e a publicacao de eventos de transicao via pub/sub. Com storage proprio, registre tambem `JobEventPublisherPortOut`/`JobEventSubscriberPortOut`. |
+| `async-jobs.sse.heartbeat` | `PT15S` | Intervalo do comentario keep-alive enviado nos streams SSE abertos, para proxies nao derrubarem conexoes ociosas. |
 
 Esses hints sao centralizados em `JobPolicyPortOut`. A implementacao default (`DefaultJobPolicyAdapterOut`) evita espalhar no core ou no controller decisoes como intervalo sugerido de polling e data de expiracao do recurso.
 
@@ -274,7 +326,18 @@ A suite de testes registra handlers de exemplo e cobre:
 - redirecionamento `303 See Other` para o resultado quando concluido;
 - resultado paginado;
 - cancelamento;
-- `404 Not Found` para job inexistente.
+- `404 Not Found` para job inexistente;
+- single-flight (coalescing), inclusive com submits concorrentes;
+- job com falha (`422` + Problem Detail no status);
+- conflito de `Idempotency-Key` reusada com outro `type` (`422`);
+- fluxo fire-and-forget via `JobReporter`.
+
+Alem dos testes MockMvc, `TomcatEndToEndIntegrationTest` sobe um Tomcat real
+em porta aleatoria (`webEnvironment = RANDOM_PORT`) e exercita o fluxo
+principal pela borda HTTP de verdade: URLs absolutas nos headers/body,
+redirect `303` sem auto-follow, formato IMF-fixdate do `Expires`, `409` antes
+da conclusao, cancelamento, idempotencia e o stream SSE (snapshot →
+`event:complete` com `resultUrl` → fechamento do stream pelo servidor).
 
 Ultima verificacao local:
 
@@ -282,4 +345,4 @@ Ultima verificacao local:
 ./mvnw test
 ```
 
-Resultado: `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 33, Failures: 0, Errors: 0, Skipped: 0`.

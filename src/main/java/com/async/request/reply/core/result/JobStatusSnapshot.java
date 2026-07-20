@@ -6,17 +6,18 @@ import com.async.request.reply.core.enums.JobStatus;
 import java.time.Instant;
 
 /**
- * Status retornado para estados não-terminais (PENDING / PROCESSING).
+ * Snapshot de status retornado para estados não-terminais (PENDING / PROCESSING).
+ * (Nome distinto do DTO web {@code JobStatusResponse} para evitar colisão.)
  */
-public record JobStatusResponse(
+public record JobStatusSnapshot(
         String jobId,
         JobStatus status,
         Instant createdAt,
         Instant lastUpdatedAt,
         Integer percentComplete
 ) {
-    public static JobStatusResponse from(Job job) {
-        return new JobStatusResponse(
+    public static JobStatusSnapshot from(Job job) {
+        return new JobStatusSnapshot(
                 job.getId(),
                 job.getStatus(),
                 job.getCreatedAt(),

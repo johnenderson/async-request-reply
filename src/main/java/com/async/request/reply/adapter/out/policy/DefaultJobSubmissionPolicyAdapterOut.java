@@ -1,6 +1,6 @@
 package com.async.request.reply.adapter.out.policy;
 
-import com.async.request.reply.autoconfigure.AsyncJobsProperties;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
 
 /**
