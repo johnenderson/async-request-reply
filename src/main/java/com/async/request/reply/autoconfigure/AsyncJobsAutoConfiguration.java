@@ -6,6 +6,7 @@ import com.async.request.reply.adapter.out.policy.DefaultJobSubmissionPolicyAdap
 import com.async.request.reply.adapter.out.processing.AsyncJobProcessorAdapterOut;
 import com.async.request.reply.adapter.out.processing.JobHandlerRegistry;
 import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
+import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
 import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
@@ -56,8 +57,16 @@ public class AsyncJobsAutoConfiguration {
     JobProcessorPortOut jobProcessorPortOut(JobHandlerRegistry registry,
                                             JobRepositoryPortOut repository,
                                             JobResultStorePortOut resultStore,
-                                            ReleaseSingleFlightUseCase releaseSingleFlight) {
-        return new AsyncJobProcessorAdapterOut(registry, repository, resultStore, releaseSingleFlight);
+                                            ReleaseSingleFlightUseCase releaseSingleFlight,
+                                            JobEventPublisherPortOut events) {
+        return new AsyncJobProcessorAdapterOut(registry, repository, resultStore, releaseSingleFlight, events);
+    }
+
+    /** Fallback no-op: com SSE desligado, publicar eventos não custa nada. */
+    @Bean
+    @ConditionalOnMissingBean
+    JobEventPublisherPortOut jobEventPublisherPortOut() {
+        return event -> { };
     }
 
     @Bean

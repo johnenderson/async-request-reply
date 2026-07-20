@@ -13,7 +13,8 @@ import java.time.Duration;
 public record AsyncJobsProperties(
         Duration resultTtl,
         Integer retryAfterSeconds,
-        boolean coalesceInFlight
+        boolean coalesceInFlight,
+        Sse sse
 ) {
 
     public AsyncJobsProperties {
@@ -27,6 +28,20 @@ public record AsyncJobsProperties(
         if (retryAfterSeconds <= 0) {
             throw new IllegalArgumentException(
                     "async-jobs.retry-after-seconds deve ser positivo, mas foi " + retryAfterSeconds);
+        }
+
+        sse = (sse == null) ? new Sse(false, null) : sse;
+    }
+
+    /** Configuração do stream de eventos SSE ({@code GET /jobs/{id}/events}). */
+    public record Sse(boolean enabled, Duration heartbeat) {
+
+        public Sse {
+            heartbeat = (heartbeat == null) ? Duration.ofSeconds(15) : heartbeat;
+            if (heartbeat.isZero() || heartbeat.isNegative()) {
+                throw new IllegalArgumentException(
+                        "async-jobs.sse.heartbeat deve ser positivo (ex.: PT15S), mas foi " + heartbeat);
+            }
         }
     }
 }

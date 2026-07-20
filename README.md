@@ -125,6 +125,41 @@ Exemplo:
 }
 ```
 
+### Acompanhar por eventos (SSE, opcional)
+
+```http
+GET /jobs/{id}/events
+Accept: text/event-stream
+```
+
+Disponivel quando `async-jobs.sse.enabled=true`. O stream entrega um snapshot
+do estado atual e os eventos de transicao ate o estado terminal, quando o
+servidor fecha a conexao:
+
+```
+event:status
+data:{"jobId":"...","status":"PROCESSING","percentComplete":null}
+
+event:progress
+data:{"jobId":"...","status":"PROCESSING","percentComplete":40}
+
+event:complete
+data:{"jobId":"...","resultUrl":"http://localhost:8080/jobs/{id}/result"}
+```
+
+- `404 Not Found`: job inexistente.
+- Eventos possiveis: `status`, `progress`, `complete`, `failed`, `cancelled`.
+- O resultado NAO trafega pelo stream: `complete` aponta a `resultUrl` e a
+  leitura continua paginada no endpoint de resultado.
+- O polling via `GET /status` continua funcionando normalmente — SSE e um
+  transporte adicional, nao um substituto.
+- Na reconexao (automatica no `EventSource`), o servidor reenvia o snapshot;
+  como o estado e materializado, nao ha replay de eventos.
+- A notificacao atravessa instancias via pub/sub do Valkey/Redis: a transicao
+  pode acontecer em uma instancia enquanto o stream vive em outra.
+
+Decisao registrada em `docs/adr/0002-sse-para-notificacao-de-jobs.md`.
+
 ### Cancelar um job
 
 ```http
@@ -232,6 +267,8 @@ Parametros proprios:
 | `async-jobs.result-ttl` | `PT1H` | Tempo de retencao dos jobs, resultados, chaves de idempotencia e controle single-flight no Valkey/Redis. Tambem e usado para calcular o header `Expires` a partir da ultima atualizacao do job. Aceita formato `Duration` do Spring, como `PT10M`, `PT1H` ou `P1D`. |
 | `async-jobs.retry-after-seconds` | `5` | Hint enviado no header `Retry-After` em submissao e consulta de status enquanto o job esta ativo. Orienta o client sobre quantos segundos esperar antes do proximo polling. |
 | `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
+| `async-jobs.sse.enabled` | `false` | Liga o stream de eventos `GET /jobs/{id}/events` (SSE) e a publicacao de eventos de transicao via pub/sub. Com storage proprio, registre tambem `JobEventPublisherPortOut`/`JobEventSubscriberPortOut`. |
+| `async-jobs.sse.heartbeat` | `PT15S` | Intervalo do comentario keep-alive enviado nos streams SSE abertos, para proxies nao derrubarem conexoes ociosas. |
 
 Esses hints sao centralizados em `JobPolicyPortOut`. A implementacao default (`DefaultJobPolicyAdapterOut`) evita espalhar no core ou no controller decisoes como intervalo sugerido de polling e data de expiracao do recurso.
 
@@ -294,7 +331,8 @@ Alem dos testes MockMvc, `TomcatEndToEndIntegrationTest` sobe um Tomcat real
 em porta aleatoria (`webEnvironment = RANDOM_PORT`) e exercita o fluxo
 principal pela borda HTTP de verdade: URLs absolutas nos headers/body,
 redirect `303` sem auto-follow, formato IMF-fixdate do `Expires`, `409` antes
-da conclusao, cancelamento e idempotencia.
+da conclusao, cancelamento, idempotencia e o stream SSE (snapshot →
+`event:complete` com `resultUrl` → fechamento do stream pelo servidor).
 
 Ultima verificacao local:
 
@@ -302,4 +340,4 @@ Ultima verificacao local:
 ./mvnw test
 ```
 
-Resultado: `Tests run: 27, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 29, Failures: 0, Errors: 0, Skipped: 0`.

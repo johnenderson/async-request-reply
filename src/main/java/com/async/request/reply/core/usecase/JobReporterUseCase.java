@@ -1,5 +1,8 @@
 package com.async.request.reply.core.usecase;
 
+import com.async.request.reply.core.enums.JobStatus;
+import com.async.request.reply.core.event.JobEvent;
+import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.spi.JobReporter;
@@ -19,17 +22,22 @@ public class JobReporterUseCase implements JobReporter {
     private final JobRepositoryPortOut repository;
     private final JobResultStorePortOut resultStore;
     private final ReleaseSingleFlightUseCase releaseSingleFlight;
+    private final JobEventPublisherPortOut events;
 
     public JobReporterUseCase(JobRepositoryPortOut repository, JobResultStorePortOut resultStore,
-                              ReleaseSingleFlightUseCase releaseSingleFlight) {
+                              ReleaseSingleFlightUseCase releaseSingleFlight,
+                              JobEventPublisherPortOut events) {
         this.repository = repository;
         this.resultStore = resultStore;
         this.releaseSingleFlight = releaseSingleFlight;
+        this.events = events;
     }
 
     @Override
     public void progress(String jobId, int percent) {
-        repository.progress(jobId, percent);
+        if (repository.progress(jobId, percent)) {
+            events.publish(new JobEvent(jobId, JobStatus.PROCESSING, percent));
+        }
     }
 
     @Override
@@ -39,20 +47,26 @@ public class JobReporterUseCase implements JobReporter {
 
     @Override
     public void complete(String jobId) {
-        repository.complete(jobId);
+        if (repository.complete(jobId)) {
+            events.publish(new JobEvent(jobId, JobStatus.COMPLETED, 100));
+        }
         releaseSingleFlight.release(jobId);
     }
 
     @Override
     public void complete(String jobId, Object result) {
         resultStore.append(jobId, asList(result));
-        repository.complete(jobId);
+        if (repository.complete(jobId)) {
+            events.publish(new JobEvent(jobId, JobStatus.COMPLETED, 100));
+        }
         releaseSingleFlight.release(jobId);
     }
 
     @Override
     public void fail(String jobId, String title, String detail) {
-        repository.fail(jobId, title, detail);
+        if (repository.fail(jobId, title, detail)) {
+            events.publish(new JobEvent(jobId, JobStatus.FAILED, null));
+        }
         releaseSingleFlight.release(jobId);
     }
 

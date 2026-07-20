@@ -11,16 +11,25 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -35,7 +44,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "async-jobs.coalesce-in-flight=false",
-                "async-jobs.retry-after-seconds=1"
+                "async-jobs.retry-after-seconds=1",
+                "async-jobs.sse.enabled=true"
         })
 class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
 
@@ -172,6 +182,51 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
         assertThat(get(url("/jobs/nao-existe/result")).statusCode()).isEqualTo(404);
     }
 
+    // -------------------------------------------------------------------------
+    // SSE: snapshot → complete → stream fechado pelo servidor
+    // -------------------------------------------------------------------------
+
+    @Test
+    void sseStreamDeliversSnapshotThenCompleteOverRealHttp() throws Exception {
+        HttpResponse<String> submitted = post("/jobs/e2e-slow");
+        String jobId = JsonPath.read(submitted.body(), "$.jobId");
+
+        HttpRequest open = HttpRequest.newBuilder(URI.create(url("/jobs/" + jobId + "/events")))
+                .header("Accept", "text/event-stream")
+                .GET().build();
+        HttpResponse<InputStream> stream = http.send(open, HttpResponse.BodyHandlers.ofInputStream());
+        assertThat(stream.statusCode()).isEqualTo(200);
+        assertThat(stream.headers().firstValue("Content-Type").orElse("")).startsWith("text/event-stream");
+
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(stream.body(), StandardCharsets.UTF_8))) {
+
+            // snapshot chega antes de qualquer transição terminal
+            readUntil(reader, line -> line.startsWith("event:status"));
+            String snapshot = readUntil(reader, line -> line.startsWith("data:")).getLast();
+            assertThat(snapshot).contains(jobId);
+
+            GATE.get().countDown(); // libera o handler → COMPLETED → push
+
+            readUntil(reader, line -> line.startsWith("event:complete"));
+            String completeData = readUntil(reader, line -> line.startsWith("data:")).getLast();
+            String resultUrl = JsonPath.read(completeData.substring("data:".length()), "$.resultUrl");
+            assertThat(resultUrl).isEqualTo(url("/jobs/" + jobId + "/result"));
+
+            awaitStreamEnd(reader); // evento terminal fecha o stream no servidor
+
+            assertThat(get(resultUrl).statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void sseForUnknownJobReturns404() throws Exception {
+        HttpRequest open = HttpRequest.newBuilder(URI.create(url("/jobs/nao-existe/events")))
+                .header("Accept", "text/event-stream")
+                .GET().build();
+        assertThat(http.send(open, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(404);
+    }
+
     // --- helpers -------------------------------------------------------------
 
     private String url(String path) {
@@ -212,6 +267,38 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
                     return response.statusCode() == expected;
                 });
         return last.get();
+    }
+
+    /** Lê linhas do stream SSE até o predicado casar — com timeout para a suíte nunca travar. */
+    private static List<String> readUntil(BufferedReader reader, Predicate<String> stop) throws Exception {
+        return CompletableFuture.supplyAsync(() -> {
+            List<String> lines = new ArrayList<>();
+            try {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    lines.add(line);
+                    if (stop.test(line)) {
+                        return lines;
+                    }
+                }
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            throw new AssertionError("stream terminou sem a linha esperada; recebido: " + lines);
+        }).get(10, TimeUnit.SECONDS);
+    }
+
+    /** Aguarda o servidor encerrar o stream (fim após evento terminal). */
+    private static void awaitStreamEnd(BufferedReader reader) throws Exception {
+        CompletableFuture.runAsync(() -> {
+            try {
+                while (reader.readLine() != null) {
+                    // drena eventuais keepalives até o fim do stream
+                }
+            } catch (IOException _) {
+                // conexão encerrada pelo servidor também conta como fim
+            }
+        }).get(10, TimeUnit.SECONDS);
     }
 
     /** Header de data HTTP deve ser IMF-fixdate (RFC 9110 / RFC 1123). */

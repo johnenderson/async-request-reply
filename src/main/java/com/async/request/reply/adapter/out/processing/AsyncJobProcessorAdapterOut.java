@@ -1,6 +1,9 @@
 package com.async.request.reply.adapter.out.processing;
 
 import com.async.request.reply.core.domain.Job;
+import com.async.request.reply.core.enums.JobStatus;
+import com.async.request.reply.core.event.JobEvent;
+import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
@@ -30,14 +33,17 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
     private final JobRepositoryPortOut repository;
     private final JobResultStorePortOut resultStore;
     private final ReleaseSingleFlightUseCase releaseSingleFlight;
+    private final JobEventPublisherPortOut events;
 
     public AsyncJobProcessorAdapterOut(JobHandlerRegistry registry, JobRepositoryPortOut repository,
                                        JobResultStorePortOut resultStore,
-                                       ReleaseSingleFlightUseCase releaseSingleFlight) {
+                                       ReleaseSingleFlightUseCase releaseSingleFlight,
+                                       JobEventPublisherPortOut events) {
         this.registry = registry;
         this.repository = repository;
         this.resultStore = resultStore;
         this.releaseSingleFlight = releaseSingleFlight;
+        this.events = events;
     }
 
     @Override
@@ -52,6 +58,7 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
         if (!repository.start(job.getId())) {
             return;
         }
+        events.publish(new JobEvent(job.getId(), JobStatus.PROCESSING, null));
 
         Routine routine = registry.find(job.getType()).orElse(null);
         if (routine == null) {
@@ -75,12 +82,16 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
     private void runSync(JobHandler<?> handler, Job job) {
         Object result = handler.handle();
         resultStore.append(job.getId(), asList(result)); // materializa o resultado (paginável)
-        repository.complete(job.getId());                // atômico: ignora se já cancelado
+        if (repository.complete(job.getId())) {          // atômico: ignora se já cancelado
+            events.publish(new JobEvent(job.getId(), JobStatus.COMPLETED, 100));
+        }
         releaseSingleFlight.release(job);                // guard não precisa esperar o TTL
     }
 
     private void fail(Job job, String title, String detail) {
-        repository.fail(job.getId(), title, detail);
+        if (repository.fail(job.getId(), title, detail)) {
+            events.publish(new JobEvent(job.getId(), JobStatus.FAILED, null));
+        }
         releaseSingleFlight.release(job);
     }
 
