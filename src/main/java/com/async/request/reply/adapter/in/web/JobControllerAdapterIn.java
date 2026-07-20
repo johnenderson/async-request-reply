@@ -24,6 +24,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 
 /**
  * Adapter in (web): HTTP boundary fino. Delega cada operação para um use case
@@ -79,6 +82,11 @@ public class JobControllerAdapterIn {
                 .body(responseMapper.toSubmittedJobResponse(submitted, statusUri));
     }
 
+    /** HTTP-date (IMF-fixdate, RFC 9110): "Tue, 03 Jun 2026 22:00:00 GMT". */
+    private static String httpDate(Instant instant) {
+        return DateTimeFormatter.RFC_1123_DATE_TIME.format(instant.atZone(ZoneOffset.UTC));
+    }
+
     private void validateType(String type) {
         if (type == null || type.isBlank() || !type.matches(TYPE_PATTERN)) {
             throw new InvalidJobRequestException(
@@ -93,12 +101,12 @@ public class JobControllerAdapterIn {
 
             case JobStatusView.InProgress v -> ResponseEntity.ok()
                     .header("Retry-After", String.valueOf(v.retryAfterSeconds()))
-                    .header("Expires", v.expiresAt().toString())
+                    .header("Expires", httpDate(v.expiresAt()))
                     .body(responseMapper.toStatusResponse(v));
 
             case JobStatusView.Completed(var expiresAt) -> ResponseEntity.status(HttpStatus.SEE_OTHER) // 303
                     .location(uris.result(id))
-                    .header("Expires", expiresAt.toString())
+                    .header("Expires", httpDate(expiresAt))
                     .build();
 
             case JobStatusView.Failed(var error) -> {

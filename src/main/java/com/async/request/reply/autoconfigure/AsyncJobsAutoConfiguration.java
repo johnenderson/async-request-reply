@@ -11,6 +11,7 @@ import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
+import com.async.request.reply.core.usecase.ReleaseSingleFlightUseCase;
 import com.async.request.reply.spi.Routine;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -54,8 +55,9 @@ public class AsyncJobsAutoConfiguration {
     @ConditionalOnMissingBean
     JobProcessorPortOut jobProcessorPortOut(JobHandlerRegistry registry,
                                             JobRepositoryPortOut repository,
-                                            JobResultStorePortOut resultStore) {
-        return new AsyncJobProcessorAdapterOut(registry, repository, resultStore);
+                                            JobResultStorePortOut resultStore,
+                                            ReleaseSingleFlightUseCase releaseSingleFlight) {
+        return new AsyncJobProcessorAdapterOut(registry, repository, resultStore, releaseSingleFlight);
     }
 
     @Bean

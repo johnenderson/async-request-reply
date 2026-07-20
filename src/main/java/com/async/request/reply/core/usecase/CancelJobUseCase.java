@@ -1,9 +1,12 @@
 package com.async.request.reply.core.usecase;
 
+import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.CancelResult;
 import com.async.request.reply.core.port.in.CancelJobPortIn;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import org.springframework.stereotype.Service;
+
+import java.util.Optional;
 
 /**
  * Implementação do {@link CancelJobPortIn}.
@@ -12,17 +15,25 @@ import org.springframework.stereotype.Service;
 public class CancelJobUseCase implements CancelJobPortIn {
 
     private final JobRepositoryPortOut repository;
+    private final ReleaseSingleFlightUseCase releaseSingleFlight;
 
-    public CancelJobUseCase(JobRepositoryPortOut repository) {
+    public CancelJobUseCase(JobRepositoryPortOut repository,
+                            ReleaseSingleFlightUseCase releaseSingleFlight) {
         this.repository = repository;
+        this.releaseSingleFlight = releaseSingleFlight;
     }
 
     @Override
     public CancelResult execute(String id) {
-        if (repository.findById(id).isEmpty()) {
+        Optional<Job> job = repository.findById(id);
+        if (job.isEmpty()) {
             return CancelResult.NOT_FOUND;
         }
         // transição atômica; false = já terminal
-        return repository.cancel(id) ? CancelResult.CANCELLED : CancelResult.ALREADY_TERMINAL;
+        if (!repository.cancel(id)) {
+            return CancelResult.ALREADY_TERMINAL;
+        }
+        releaseSingleFlight.release(job.get());
+        return CancelResult.CANCELLED;
     }
 }

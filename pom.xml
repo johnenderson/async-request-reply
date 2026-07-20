@@ -11,25 +11,11 @@
 	</parent>
 
 	<groupId>com.async</groupId>
-	<artifactId>async.request.reply-pattern</artifactId>
+	<artifactId>async-request-reply</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 
-	
-	<name/>
-	<description/>
-	<url/>
-	<licenses>
-		<license/>
-	</licenses>
-	<developers>
-		<developer/>
-	</developers>
-	<scm>
-		<connection/>
-		<developerConnection/>
-		<tag/>
-		<url/>
-	</scm>
+	<name>async-request-reply</name>
+	<description>Building block Spring Boot para o padrão Asynchronous Request-Reply (202 Accepted + polling de status + resultado paginado) sobre Valkey/Redis.</description>
 
 	<properties>
 		<java.version>25</java.version>

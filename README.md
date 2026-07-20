@@ -137,6 +137,11 @@ Possiveis respostas:
 - `409 Conflict`: job ja esta em estado terminal.
 - `404 Not Found`: job inexistente.
 
+> Nota: o cancelamento marca o job como `CANCELLED` e impede que uma conclusao
+> posterior sobrescreva o estado, mas **nao interrompe** uma execucao ja em
+> andamento — o handler continua rodando ate o fim; o resultado que ele
+> produzir e descartado pelo TTL.
+
 ## Estados do job
 
 O dominio trabalha com os seguintes estados:
@@ -177,11 +182,19 @@ Regras importantes:
 - Se o request usar um `type` sem handler registrado, a API retorna `400 Bad Request`.
 - O retorno `R` do handler vira o resultado consultavel em `/jobs/{id}/result`.
 
+Para rotinas fire-and-forget existe a variante `AsyncJobHandler`: a lib apenas
+dispara `start(ctx)` e mantem o job em `PROCESSING` ate o worker reportar via
+`JobReporter` (`complete`/`fail`/`progress`/`append`). Atencao: se o worker
+morrer sem reportar, o job fica `PROCESSING` ate o TTL (`async-jobs.result-ttl`)
+— e, com `coalesce-in-flight=true`, novos submits daquele `type` continuarao
+colapsando nesse job "zumbi" durante esse periodo. Workers devem ter timeout
+proprio e reportar `fail` em caso de erro.
+
 ## Politicas implementadas
 
 - **Polling hint**: respostas usam `Retry-After` para orientar quando o client deve consultar novamente.
 - **Retencao**: jobs sao mantidos no Valkey/Redis pelo TTL `async-jobs.result-ttl` (padrao: 1 hora).
-- **Single-flight opcional**: `async-jobs.coalesce-in-flight=true` permite colapsar requests equivalentes enquanto ha job ativo.
+- **Single-flight opcional**: `async-jobs.coalesce-in-flight=true` permite colapsar requests equivalentes enquanto ha job ativo. O guard e liberado assim que o job atinge estado terminal (complete/fail/cancel), sem esperar o TTL.
 - **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente.
 - **Problem Details**: falhas de dominio sao traduzidas para `ProblemDetail`.
 - **Resultado paginado**: listas retornadas pelos handlers sao expostas com `page`, `size`, `totalElements` e `totalPages`.
@@ -274,7 +287,14 @@ A suite de testes registra handlers de exemplo e cobre:
 - redirecionamento `303 See Other` para o resultado quando concluido;
 - resultado paginado;
 - cancelamento;
-- `404 Not Found` para job inexistente.
+- `404 Not Found` para job inexistente;
+- single-flight (coalescing) e fluxo fire-and-forget via `JobReporter`.
+
+Alem dos testes MockMvc, `TomcatEndToEndIntegrationTest` sobe um Tomcat real
+em porta aleatoria (`webEnvironment = RANDOM_PORT`) e exercita o fluxo
+principal pela borda HTTP de verdade: URLs absolutas nos headers/body,
+redirect `303` sem auto-follow, formato IMF-fixdate do `Expires`, `409` antes
+da conclusao, cancelamento e idempotencia.
 
 Ultima verificacao local:
 
@@ -282,4 +302,4 @@ Ultima verificacao local:
 ./mvnw test
 ```
 
-Resultado: `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 27, Failures: 0, Errors: 0, Skipped: 0`.

@@ -4,6 +4,7 @@ import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
+import com.async.request.reply.core.usecase.ReleaseSingleFlightUseCase;
 import com.async.request.reply.spi.AsyncJobHandler;
 import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobHandler;
@@ -28,12 +29,15 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
     private final JobHandlerRegistry registry;
     private final JobRepositoryPortOut repository;
     private final JobResultStorePortOut resultStore;
+    private final ReleaseSingleFlightUseCase releaseSingleFlight;
 
     public AsyncJobProcessorAdapterOut(JobHandlerRegistry registry, JobRepositoryPortOut repository,
-                                       JobResultStorePortOut resultStore) {
+                                       JobResultStorePortOut resultStore,
+                                       ReleaseSingleFlightUseCase releaseSingleFlight) {
         this.registry = registry;
         this.repository = repository;
         this.resultStore = resultStore;
+        this.releaseSingleFlight = releaseSingleFlight;
     }
 
     @Override
@@ -51,7 +55,7 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
 
         Routine routine = registry.find(job.getType()).orElse(null);
         if (routine == null) {
-            repository.fail(job.getId(), "Unknown job type",
+            fail(job, "Unknown job type",
                     "Nenhuma routine registrada para o type '" + job.getType() + "'.");
             return;
         }
@@ -60,11 +64,11 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
             switch (routine) {
                 case JobHandler<?> sync -> runSync(sync, job);
                 case AsyncJobHandler async -> runAsync(async, job);
-                default -> repository.fail(job.getId(), "Unsupported routine",
+                default -> fail(job, "Unsupported routine",
                         "Tipo de routine não suportado: " + routine.getClass());
             }
         } catch (Exception e) {
-            repository.fail(job.getId(), "Processing error", e.getMessage());
+            fail(job, "Processing error", e.getMessage());
         }
     }
 
@@ -72,6 +76,12 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
         Object result = handler.handle();
         resultStore.append(job.getId(), asList(result)); // materializa o resultado (paginável)
         repository.complete(job.getId());                // atômico: ignora se já cancelado
+        releaseSingleFlight.release(job);                // guard não precisa esperar o TTL
+    }
+
+    private void fail(Job job, String title, String detail) {
+        repository.fail(job.getId(), title, detail);
+        releaseSingleFlight.release(job);
     }
 
     /** Normaliza o resultado: null → vazio, List → cópia, valor único → lista de 1. */

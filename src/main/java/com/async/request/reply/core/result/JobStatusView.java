@@ -11,7 +11,7 @@ import java.time.Instant;
 public sealed interface JobStatusView {
 
     /** PENDING / PROCESSING: o client deve continuar o polling. */
-    record InProgress(JobStatusResponse body, int retryAfterSeconds, Instant expiresAt) implements JobStatusView {}
+    record InProgress(JobStatusSnapshot body, int retryAfterSeconds, Instant expiresAt) implements JobStatusView {}
 
     /** COMPLETED: redireciona o client para o result resource. */
     record Completed(Instant expiresAt) implements JobStatusView {}

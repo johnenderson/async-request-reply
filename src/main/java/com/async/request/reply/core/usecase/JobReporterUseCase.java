@@ -18,10 +18,13 @@ public class JobReporterUseCase implements JobReporter {
 
     private final JobRepositoryPortOut repository;
     private final JobResultStorePortOut resultStore;
+    private final ReleaseSingleFlightUseCase releaseSingleFlight;
 
-    public JobReporterUseCase(JobRepositoryPortOut repository, JobResultStorePortOut resultStore) {
+    public JobReporterUseCase(JobRepositoryPortOut repository, JobResultStorePortOut resultStore,
+                              ReleaseSingleFlightUseCase releaseSingleFlight) {
         this.repository = repository;
         this.resultStore = resultStore;
+        this.releaseSingleFlight = releaseSingleFlight;
     }
 
     @Override
@@ -37,17 +40,20 @@ public class JobReporterUseCase implements JobReporter {
     @Override
     public void complete(String jobId) {
         repository.complete(jobId);
+        releaseSingleFlight.release(jobId);
     }
 
     @Override
     public void complete(String jobId, Object result) {
         resultStore.append(jobId, asList(result));
         repository.complete(jobId);
+        releaseSingleFlight.release(jobId);
     }
 
     @Override
     public void fail(String jobId, String title, String detail) {
         repository.fail(jobId, title, detail);
+        releaseSingleFlight.release(jobId);
     }
 
     /** Normaliza o resultado: null → vazio, List → cópia, valor único → lista de 1. */

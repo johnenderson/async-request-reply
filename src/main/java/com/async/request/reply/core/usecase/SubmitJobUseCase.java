@@ -57,33 +57,40 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
             }
         }
 
-        // 2. Single-flight (coalescing): se já há um job ativo p/ a chave, retorna ele
+        // 2. Sem coalescing: cria direto
         String key = submissionPolicy.coalesceInFlight() ? coalescingKey.keyFor(type) : null;
-        if (key != null) {
+        if (key == null) {
+            return submitted(createAndDispatch(type, idempotencyKey, null).getId());
+        }
+
+        // 3. Coalescing: peek → create → claim serializados pelo lock da chave.
+        //    O claim só acontece DEPOIS de persistir, então o guard nunca aponta
+        //    para um job inexistente (elimina o take-over indevido em corrida).
+        return singleFlight.withLock(key, () -> {
             Optional<String> owner = singleFlight.peek(key).filter(this::isActive);
             if (owner.isPresent()) {
                 return submitted(owner.get());
             }
-        }
+            return submitted(createAndDispatch(type, idempotencyKey, key).getId());
+        });
+    }
 
-        // 3. Reivindica o single-flight ANTES de persistir (evita job órfão)
+    /**
+     * Cria o job (com dedupe de idempotência), reivindica o single-flight quando
+     * aplicável e dispara o processamento. O claim precede o dispatch para que a
+     * liberação do guard (na transição terminal) nunca corra antes do claim.
+     */
+    private Job createAndDispatch(String type, String idempotencyKey, String singleFlightKey) {
         String id = UUID.randomUUID().toString();
-        if (key != null) {
-            String winner = singleFlight.begin(key, id);
-            if (!winner.equals(id)) {
-                if (isActive(winner)) {
-                    return submitted(winner);            // perdeu a corrida → dedupe (nada persistido)
-                }
-                singleFlight.takeOver(key, id);          // guard obsoleto → assume
-            }
-        }
-
-        // 4. Cria (com dedupe de idempotência) e dispara o processamento
         Job job = repository.create(id, type, idempotencyKey);
-        if (job.getId().equals(id) && job.getStatus() == JobStatus.PENDING) {
+        boolean fresh = job.getId().equals(id);
+        if (fresh && singleFlightKey != null) {
+            singleFlight.claim(singleFlightKey, id);
+        }
+        if (fresh && job.getStatus() == JobStatus.PENDING) {
             processor.process(job); // via Spring proxy → @Async funciona
         }
-        return submitted(job.getId());
+        return job;
     }
 
     /**
