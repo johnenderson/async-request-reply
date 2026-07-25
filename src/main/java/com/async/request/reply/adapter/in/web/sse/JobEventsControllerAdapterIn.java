@@ -7,6 +7,8 @@ import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.event.JobEvent;
 import com.async.request.reply.core.port.in.WatchJobPortIn;
 import com.async.request.reply.core.result.JobWatchView;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -22,38 +24,40 @@ import java.util.Queue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Adapter in (web/SSE): {@code GET /jobs/{id}/events} abre um stream
  * {@code text/event-stream} que entrega um snapshot do estado atual e os
  * eventos de transição até o estado terminal, quando o stream é fechado.
  *
- * <p>Os writes ({@link SseEmitter#send}) são bloqueantes; para não travar as
- * threads compartilhadas de pub/sub (Redisson) e do scheduler de heartbeat, eles
- * rodam num <b>pool dedicado</b>, serializados por sessão (ordem preservada, um
- * write por vez). Um cliente lento consome no máximo uma thread do pool — não
- * atrasa a entrega de eventos de outros jobs nem o heartbeat de outros streams.</p>
+ * <p>Concorrência: {@link SseEmitter#send} é bloqueante, então os writes nunca
+ * rodam na thread que originou o evento (request ou pub/sub do Redisson). Cada
+ * write é despachado para uma <b>thread virtual</b>, serializado por sessão para
+ * preservar a ordem. Um cliente que não drena o socket custa uma thread virtual
+ * e um backlog próprio limitado ({@code async-jobs.sse.max-pending-events}); ao
+ * estourar esse backlog a sessão é encerrada, em vez de acumular memória ou
+ * atrasar outros streams.</p>
  *
- * <p>Fica FORA do component-scan do adapter web: o bean é registrado pela
- * auto-configuration do SSE somente quando {@code async-jobs.sse.enabled=true}.
- * A {@code resultUrl} é resolvida na thread da request — os listeners rodam em
- * threads de pub/sub, sem request context para o {@link JobUriBuilder}.</p>
+ * <p>A {@code resultUrl} é resolvida na thread da request — os listeners rodam
+ * em threads de pub/sub, sem request context para o {@link JobUriBuilder}.</p>
  */
 @RestController
 @RequestMapping("/jobs")
 public class JobEventsControllerAdapterIn implements DisposableBean {
 
+    private static final Logger log = LoggerFactory.getLogger(JobEventsControllerAdapterIn.class);
+
     private final WatchJobPortIn watchJob;
     private final JobUriBuilder uris;
     private final long timeoutMillis;
     private final Duration heartbeatInterval;
+    private final int maxPendingEvents;
     private final ScheduledExecutorService heartbeatScheduler;
-    private final ExecutorService sendPool;
+    private final ExecutorService sendExecutor;
 
     public JobEventsControllerAdapterIn(WatchJobPortIn watchJob, JobUriBuilder uris,
                                         AsyncJobsProperties properties) {
@@ -61,16 +65,20 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
         this.uris = uris;
         this.timeoutMillis = properties.resultTtl().toMillis();
         this.heartbeatInterval = properties.sse().heartbeat();
-        this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(
-                daemonFactory("async-jobs-sse-heartbeat"));
-        this.sendPool = Executors.newFixedThreadPool(
-                properties.sse().sendPoolSize(), daemonFactory("async-jobs-sse-send"));
+        this.maxPendingEvents = properties.sse().maxPendingEvents();
+        this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "async-jobs-sse-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.sendExecutor = Executors.newVirtualThreadPerTaskExecutor();
     }
 
     @GetMapping(path = "/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> events(@PathVariable String id) {
         SseEmitter emitter = new SseEmitter(timeoutMillis);
-        SseSession session = new SseSession(emitter, uris.result(id).toString(), new SerialExecutor(sendPool));
+        SseSession session = new SseSession(id, emitter, uris.result(id).toString(),
+                new SerialExecutor(sendExecutor, maxPendingEvents));
 
         return switch (watchJob.execute(id, session::deliver)) {
             case JobWatchView.NotFound _ -> ResponseEntity.notFound().build();
@@ -88,80 +96,98 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
     @Override
     public void destroy() {
         heartbeatScheduler.shutdownNow();
-        sendPool.shutdownNow();
-    }
-
-    private static ThreadFactory daemonFactory(String prefix) {
-        AtomicInteger seq = new AtomicInteger();
-        return runnable -> {
-            Thread thread = new Thread(runnable, prefix + "-" + seq.incrementAndGet());
-            thread.setDaemon(true);
-            return thread;
-        };
+        sendExecutor.shutdownNow();
     }
 
     /**
-     * Executor que roda tarefas de uma sessão uma-a-uma sobre um pool
-     * compartilhado (preserva ordem e exclusão mútua sem thread dedicada por
-     * sessão). Do javadoc de {@link Executor}.
+     * Fila serial por sessão sobre um executor compartilhado: preserva ordem e
+     * exclusão mútua sem thread dedicada, e recusa trabalho quando o backlog
+     * passa do teto (cliente lento).
      */
-    private static final class SerialExecutor implements Executor {
+    private static final class SerialExecutor {
 
         private final Queue<Runnable> tasks = new ArrayDeque<>();
         private final Executor delegate;
-        private Runnable active;
+        private final int maxPending;
+        private boolean running;
 
-        SerialExecutor(Executor delegate) {
+        SerialExecutor(Executor delegate, int maxPending) {
             this.delegate = delegate;
+            this.maxPending = maxPending;
         }
 
-        @Override
-        public synchronized void execute(Runnable command) {
+        /** @return {@code false} se o backlog estourou e a tarefa foi recusada */
+        synchronized boolean offer(Runnable command) {
+            if (tasks.size() >= maxPending) {
+                return false;
+            }
             tasks.add(() -> {
                 try {
                     command.run();
                 } finally {
-                    scheduleNext();
+                    next();
                 }
             });
-            if (active == null) {
-                scheduleNext();
+            if (!running) {
+                running = true;
+                next();
             }
+            return true;
         }
 
-        private synchronized void scheduleNext() {
-            if ((active = tasks.poll()) != null) {
-                delegate.execute(active);
+        /** Sem writes pendentes nem em curso — usado para não empilhar heartbeats. */
+        synchronized boolean idle() {
+            return !running && tasks.isEmpty();
+        }
+
+        private synchronized void next() {
+            Runnable task = tasks.poll();
+            if (task == null) {
+                running = false;
+                return;
+            }
+            try {
+                delegate.execute(task);
+            } catch (RejectedExecutionException _) {
+                // executor encerrado (shutdown da aplicação): descarta o backlog
+                tasks.clear();
+                running = false;
             }
         }
     }
 
     /**
-     * Estado de um stream aberto. Os writes rodam serializados (via
-     * {@link SerialExecutor}); {@code closed} é volátil para os fast-paths e o
-     * teardown é {@code synchronized}.
+     * Estado de um stream aberto. Os writes rodam serializados; {@code closed}
+     * é volátil para os fast-paths e o teardown é {@code synchronized}.
      */
     private static final class SseSession {
 
+        private final String jobId;
         private final SseEmitter emitter;
         private final String resultUrl;
-        private final Executor serial;
+        private final SerialExecutor serial;
         private volatile boolean closed;
         private AutoCloseable subscription;
         private ScheduledFuture<?> heartbeat;
 
-        private SseSession(SseEmitter emitter, String resultUrl, Executor serial) {
+        private SseSession(String jobId, SseEmitter emitter, String resultUrl, SerialExecutor serial) {
+            this.jobId = jobId;
             this.emitter = emitter;
             this.resultUrl = resultUrl;
             this.serial = serial;
         }
 
-        /** Enfileira o envio (não bloqueia a thread chamadora — request ou pub/sub). */
+        /** Enfileira o envio; não bloqueia a thread chamadora (request ou pub/sub). */
         void deliver(JobEvent event) {
             if (closed) {
                 return;
             }
-            serial.execute(() -> send(event));
+            if (!serial.offer(() -> send(event))) {
+                log.warn("Stream SSE do job '{}' com backlog cheio; cliente nao esta drenando — encerrando",
+                        jobId);
+                close();
+                emitter.complete();
+            }
         }
 
         private void send(JobEvent event) {
@@ -170,7 +196,8 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
             }
             try {
                 emitter.send(toSse(event));
-            } catch (Exception _) {
+            } catch (Exception e) {
+                log.debug("Stream SSE do job '{}' encerrado durante o envio: {}", jobId, e.getMessage());
                 close(); // client desconectou
                 return;
             }
@@ -181,10 +208,10 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
         }
 
         private void enqueueHeartbeat() {
-            if (closed) {
-                return;
+            if (closed || !serial.idle()) {
+                return; // já há write pendente: keepalive seria redundante
             }
-            serial.execute(this::sendHeartbeat);
+            serial.offer(this::sendHeartbeat);
         }
 
         private void sendHeartbeat() {
@@ -193,7 +220,8 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
             }
             try {
                 emitter.send(SseEmitter.event().comment("keepalive"));
-            } catch (Exception _) {
+            } catch (Exception e) {
+                log.debug("Keepalive do job '{}' falhou; encerrando stream: {}", jobId, e.getMessage());
                 close();
             }
         }
@@ -248,8 +276,8 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
         private static void closeQuietly(AutoCloseable subscription) {
             try {
                 subscription.close();
-            } catch (Exception _) {
-                // cancelamento de assinatura é best-effort
+            } catch (Exception e) {
+                log.debug("Falha ao cancelar assinatura de eventos: {}", e.getMessage());
             }
         }
     }

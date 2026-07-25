@@ -1,0 +1,22 @@
+{
+  "properties": [
+    {
+      "name": "async-jobs.storage",
+      "type": "java.lang.String",
+      "defaultValue": "redis",
+      "description": "Seleciona a auto-configuracao de storage. Com 'redis', a lib registra os adapters Valkey/Redis via Redisson; com outro valor, o consumidor deve registrar os ports."
+    },
+    {
+      "name": "async-jobs.web.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "description": "Liga o adapter web servlet (/jobs). Quando false, a lib funciona apenas como motor, sem expor endpoints HTTP."
+    },
+    {
+      "name": "async-jobs.recovery.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "description": "Liga a varredura de jobs orfaos. Avaliado como condicao de criacao dos beans; desligar significa que um job cuja instancia cair fica PENDING ate o TTL."
+    }
+  ]
+}

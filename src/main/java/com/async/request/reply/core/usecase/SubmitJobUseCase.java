@@ -12,7 +12,8 @@ import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
 import com.async.request.reply.core.port.out.SingleFlightPortOut;
 import com.async.request.reply.core.result.SubmittedJob;
-import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -22,8 +23,9 @@ import java.util.UUID;
  * Responsável pela request validation, single-flight (coalescing automático)
  * e pela decisão de enfileirar o processamento.
  */
-@Service
 public class SubmitJobUseCase implements SubmitJobPortIn {
+
+    private static final Logger log = LoggerFactory.getLogger(SubmitJobUseCase.class);
 
     private final JobRepositoryPortOut repository;
     private final JobProcessorPortOut processor;
@@ -59,43 +61,70 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
             }
         }
 
-        // 2. Sem coalescing: cria direto
         String key = submissionPolicy.coalesceInFlight() ? coalescingKey.keyFor(type) : null;
-        if (key == null) {
-            return submitted(createAndDispatch(type, idempotencyKey, null).getId());
-        }
 
-        // 3. Coalescing: peek → create → claim serializados pelo lock da chave.
-        //    O claim só acontece DEPOIS de persistir, então o guard nunca aponta
-        //    para um job inexistente (elimina o take-over indevido em corrida).
-        return singleFlight.withLock(key, () -> {
-            Optional<String> owner = singleFlight.peek(key).filter(this::isActive);
-            if (owner.isPresent()) {
-                return submitted(owner.get());
-            }
-            return submitted(createAndDispatch(type, idempotencyKey, key).getId());
-        });
+        // 2. Decide e persiste. Com coalescing, peek → create → claim rodam sob o
+        //    lock da chave, e o claim só ocorre depois de persistir (o guard nunca
+        //    aponta para job inexistente).
+        Submission submission = (key == null)
+                ? create(type, idempotencyKey, null)
+                : singleFlight.withLock(key, () -> {
+                    Optional<String> owner = singleFlight.peek(key).filter(this::isActive);
+                    return owner.isPresent()
+                            ? Submission.existing(owner.get())
+                            : create(type, idempotencyKey, key);
+                });
+
+        // 3. Dispatch FORA do lock: enfileirar pode bloquear esperando vaga no
+        //    executor, e segurar o lock nesse intervalo travaria todos os submits
+        //    do mesmo type — em todas as instâncias.
+        dispatch(submission);
+        return submitted(submission.jobId());
     }
 
     /**
-     * Cria o job (com dedupe de idempotência), reivindica o single-flight quando
-     * aplicável e dispara o processamento. O claim precede o dispatch para que a
-     * liberação do guard (na transição terminal) nunca corra antes do claim.
+     * Resultado da decisão de submissão: o id a devolver ao cliente e, quando o
+     * job é novo, o próprio job a ser enfileirado.
      */
-    private Job createAndDispatch(String type, String idempotencyKey, String singleFlightKey) {
+    private record Submission(String jobId, Job toDispatch) {
+
+        static Submission existing(String jobId) {
+            return new Submission(jobId, null);
+        }
+    }
+
+    private Submission create(String type, String idempotencyKey, String singleFlightKey) {
         String id = UUID.randomUUID().toString();
         Job job = repository.create(id, type, idempotencyKey);
-        boolean fresh = job.getId().equals(id);
-        if (!fresh) {
-            ensureSameType(job, type); // dedupe de idempotência venceu a corrida
+        if (!job.getId().equals(id)) {
+            // o dedupe de idempotência venceu a corrida: o job já existe e já foi
+            // (ou será) despachado por quem o criou
+            ensureSameType(job, type);
+            return Submission.existing(job.getId());
         }
-        if (fresh && singleFlightKey != null) {
+        if (singleFlightKey != null) {
             singleFlight.claim(singleFlightKey, id);
         }
-        if (fresh && job.getStatus() == JobStatus.PENDING) {
-            processor.process(job); // via Spring proxy → @Async funciona
+        return job.getStatus() == JobStatus.PENDING
+                ? new Submission(id, job)
+                : Submission.existing(id);
+    }
+
+    /**
+     * Enfileira o processamento. Uma recusa do executor não invalida a submissão:
+     * o job está persistido como PENDING e a varredura de recuperação o
+     * reenfileira — melhor devolver `202` do que `500` para um job aceito.
+     */
+    private void dispatch(Submission submission) {
+        if (submission.toDispatch() == null) {
+            return;
         }
-        return job;
+        try {
+            processor.process(submission.toDispatch()); // via Spring proxy → @Async funciona
+        } catch (RuntimeException e) {
+            log.warn("Dispatch do job '{}' recusado pelo executor; a recuperacao reenfileira: {}",
+                    submission.jobId(), e.getMessage());
+        }
     }
 
     /**

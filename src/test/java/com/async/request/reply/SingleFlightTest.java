@@ -58,8 +58,7 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
             return new JobHandler<>() {
                 public String type() { return "sf-test"; }
                 public List<String> handle() {
-                    try { GATE.get().await(2, TimeUnit.SECONDS); }
-                    catch (InterruptedException _) { Thread.currentThread().interrupt(); }
+                    TestGate.await(GATE.get());
                     return List.of("ativos", "inativos");
                 }
             };

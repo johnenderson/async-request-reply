@@ -25,7 +25,9 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -94,6 +96,43 @@ class ValkeyAsyncJobIntegrationTest extends ValkeyContainerTestSupport {
                 .andExpect(jsonPath("$.size", is(2)))
                 .andExpect(jsonPath("$.totalElements", is(3)))
                 .andExpect(jsonPath("$.totalPages", is(2)));
+    }
+
+    /** Título em branco pela SPI não pode virar 500 no status (FAILED sem falha). */
+    @Test
+    void failWithBlankTitleStillRendersProblemDetail() throws Exception {
+        MvcResult submitted = mvc.perform(post("/jobs/tc-async"))
+                .andExpect(status().isAccepted()).andReturn();
+        String jobId = jobIdFrom(submitted);
+        routine.awaitJobId();
+
+        assertTrue(reporter.fail(jobId, "  ", "detalhe da falha"), "fail deve ser aceito");
+
+        mvc.perform(get("/jobs/{id}/status", jobId))
+                .andExpect(status().is(422))
+                .andExpect(jsonPath("$.title").isNotEmpty())
+                .andExpect(jsonPath("$.detail", is("detalhe da falha")));
+    }
+
+    /** Report em job terminal é recusado (o worker precisa saber para parar). */
+    @Test
+    void reportsOnTerminalJobAreRejected() throws Exception {
+        MvcResult submitted = mvc.perform(post("/jobs/tc-async"))
+                .andExpect(status().isAccepted()).andReturn();
+        String jobId = jobIdFrom(submitted);
+        routine.awaitJobId();
+
+        assertTrue(reporter.complete(jobId, List.of("ok")), "primeiro complete deve ser aceito");
+
+        assertFalse(reporter.append(jobId, List.of("tarde-demais")),
+                "append em job concluido deve ser recusado (nao pode mudar o resultado)");
+        assertFalse(reporter.progress(jobId, 50), "progress em job concluido deve ser recusado");
+        assertFalse(reporter.complete(jobId), "complete repetido deve ser recusado");
+
+        // o resultado segue com apenas o item original
+        mvc.perform(get("/jobs/{id}/result", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements", is(1)));
     }
 
     @Test

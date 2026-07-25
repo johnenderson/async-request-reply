@@ -12,12 +12,17 @@ import org.redisson.api.RBucket;
 import org.redisson.api.RLock;
 import org.redisson.api.RMap;
 import org.redisson.api.RMapAsync;
+import org.redisson.api.RScoredSortedSet;
+import org.redisson.api.RScoredSortedSetAsync;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -32,29 +37,32 @@ import java.util.Set;
  *   <li>Transições: {@link RLock} por job serializa cancel/complete/fail
  *       concorrentes, e o {@link RMap} é atualizado dentro do lock
  *       (check-and-set seguro entre instâncias).</li>
+ *   <li>Índice de ativos: um sorted set ({@code jobs:active}, score = última
+ *       atualização) mantido no MESMO MULTI/EXEC da transição. É o que permite
+ *       encontrar jobs órfãos sem varrer o keyspace.</li>
  * </ul>
  */
 public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
-    private static final String JOB_PREFIX = "job:";
-    private static final String IDEM_PREFIX = "idem:";
-    private static final String LOCK_PREFIX = "lock:job:";
-    private static final String IDEM_LOCK_PREFIX = "lock:idem:";
+    private static final Logger log = LoggerFactory.getLogger(RedisJobRepositoryAdapterOut.class);
 
     private static final Set<String> ACTIVE =
             Set.of(JobStatus.PENDING.name(), JobStatus.PROCESSING.name());
 
     private final RedissonClient redisson;
     private final RedisJobMapper jobMapper;
+    private final RedisKeys keys;
     private final Duration retention;
     private final Clock clock;
 
     public RedisJobRepositoryAdapterOut(RedissonClient redisson,
                                         RedisJobMapper jobMapper,
+                                        RedisKeys keys,
                                         AsyncJobsProperties properties,
                                         Clock clock) {
         this.redisson = redisson;
         this.jobMapper = jobMapper;
+        this.keys = keys;
         this.retention = properties.resultTtl();
         this.clock = clock;
     }
@@ -65,10 +73,10 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
             return writeHash(id, type);
         }
 
-        RLock lock = redisson.getLock(IDEM_LOCK_PREFIX + idempotencyKey);
+        RLock lock = redisson.getLock(keys.idempotencyLock(idempotencyKey));
         lock.lock();
         try {
-            RBucket<String> idem = redisson.getBucket(IDEM_PREFIX + idempotencyKey, StringCodec.INSTANCE);
+            RBucket<String> idem = redisson.getBucket(keys.idempotency(idempotencyKey), StringCodec.INSTANCE);
             String existingId = idem.get();
             if (existingId != null) {
                 Optional<Job> existing = findById(existingId);
@@ -90,35 +98,46 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
     private Job writeHash(String id, String type) {
         Instant now = clock.instant();
-        putAllWithTtl(id, RedisJobHash.pending(type, now).toMap());
+        write(id, RedisJobHash.pending(type, now).toMap(), now, false);
         return Job.pending(id, type, now);
     }
 
     /**
-     * HSET + EXPIRE em MULTI/EXEC: evita que uma falha entre os dois comandos
-     * deixe o hash do job sem TTL (leak permanente no Redis).
+     * Grava campos + TTL + índice de ativos em um único MULTI/EXEC: evita que
+     * uma falha no meio deixe o hash sem TTL (leak permanente) ou o índice
+     * dessincronizado do estado.
      */
-    private void putAllWithTtl(String id, Map<String, String> fields) {
+    private void write(String id, Map<String, String> fields, Instant now, boolean terminal) {
         RBatch batch = redisson.createBatch(BatchOptions.defaults()
                 .executionMode(BatchOptions.ExecutionMode.REDIS_WRITE_ATOMIC));
-        RMapAsync<String, String> map = batch.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
+
+        RMapAsync<String, String> map = batch.getMap(keys.job(id), StringCodec.INSTANCE);
         map.putAllAsync(fields);
         map.expireAsync(retention);
+
+        RScoredSortedSetAsync<String> active = batch.getScoredSortedSet(keys.activeIndex(), StringCodec.INSTANCE);
+        if (terminal) {
+            active.removeAsync(id);
+        } else {
+            active.addAsync(now.toEpochMilli(), id);
+        }
+
         batch.execute();
     }
 
     @Override
     public Optional<Job> findById(String id) {
-        RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
+        RMap<String, String> map = redisson.getMap(keys.job(id), StringCodec.INSTANCE);
         Map<String, String> h = map.readAllMap();
         if (h.isEmpty() || h.get(RedisJobHash.FIELD_STATUS) == null) {
             return Optional.empty(); // inexistente ou hash sem o campo-chave
         }
         try {
             return Optional.of(jobMapper.toDomain(id, h));
-        } catch (RuntimeException _) {
-            // hash corrompido/parcial (enum ou timestamp inválido) → trata como
-            // inexistente em vez de propagar 500 para o cliente
+        } catch (RuntimeException e) {
+            // hash corrompido/parcial: trata como inexistente (404) em vez de
+            // propagar 500 — mas registra, porque isso não deveria acontecer
+            log.warn("Hash do job '{}' esta corrompido e sera tratado como inexistente: {}", id, h, e);
             return Optional.empty();
         }
     }
@@ -126,36 +145,53 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
     @Override
     public Optional<Job> findByIdempotencyKey(String idempotencyKey) {
         if (idempotencyKey == null) return Optional.empty();
-        String id = redisson.<String>getBucket(IDEM_PREFIX + idempotencyKey, StringCodec.INSTANCE).get();
+        String id = redisson.<String>getBucket(keys.idempotency(idempotencyKey), StringCodec.INSTANCE).get();
         return id == null ? Optional.empty() : findById(id);
     }
 
     @Override
-    public boolean start(String id) {
-        return transition(id, Set.of(JobStatus.PENDING.name()), RedisJobHash.processing(clock.instant()).toMap());
+    public Optional<Instant> start(String id) {
+        Instant now = clock.instant();
+        return transition(id, Set.of(JobStatus.PENDING.name()),
+                RedisJobHash.processing(now).toMap(), now, false);
     }
 
     @Override
-    public boolean complete(String id) {
-        return transition(id, ACTIVE, RedisJobHash.completed(clock.instant()).toMap());
+    public Optional<Instant> complete(String id) {
+        Instant now = clock.instant();
+        return transition(id, ACTIVE, RedisJobHash.completed(now).toMap(), now, true);
     }
 
     @Override
-    public boolean fail(String id, String title, String detail) {
-        return transition(id, ACTIVE, RedisJobHash.failed(title, detail, clock.instant()).toMap());
+    public Optional<Instant> fail(String id, String title, String detail) {
+        Instant now = clock.instant();
+        return transition(id, ACTIVE, RedisJobHash.failed(title, detail, now).toMap(), now, true);
     }
 
     @Override
-    public boolean cancel(String id) {
-        return transition(id, ACTIVE, RedisJobHash.cancelled(clock.instant()).toMap());
+    public Optional<Instant> cancel(String id) {
+        Instant now = clock.instant();
+        return transition(id, ACTIVE, RedisJobHash.cancelled(now).toMap(), now, true);
     }
 
     @Override
-    public boolean progress(String id, int percent) {
+    public Optional<Instant> progress(String id, int percent) {
         // apenas PROCESSING: progresso implica execução em andamento, e o
         // evento publicado nunca anuncia um status diferente do persistido
+        Instant now = clock.instant();
         return transition(id, Set.of(JobStatus.PROCESSING.name()),
-                RedisJobHash.progress(percent, clock.instant()).toMap());
+                RedisJobHash.progress(percent, now).toMap(), now, false);
+    }
+
+    @Override
+    public List<String> findStaleActive(Instant olderThan, int limit) {
+        RScoredSortedSet<String> active = redisson.getScoredSortedSet(keys.activeIndex(), StringCodec.INSTANCE);
+        return List.copyOf(active.valueRange(0, true, olderThan.toEpochMilli(), true, 0, limit));
+    }
+
+    @Override
+    public void untrackActive(String id) {
+        redisson.getScoredSortedSet(keys.activeIndex(), StringCodec.INSTANCE).remove(id);
     }
 
     // --- helpers -----------------------------------------------------------
@@ -165,24 +201,26 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
      * Lock bloqueante SEM lease fixo → o watchdog do Redisson renova enquanto a
      * thread o mantém, e libera (~30s) se o holder morrer. Bloquear em vez de
      * tryLock evita que um timeout de lock seja confundido com "já terminal"
-     * pelo caller (falso retorno {@code false}).
+     * pelo caller.
+     *
+     * @return o instante gravado, ou vazio se a transição não era permitida
      */
-    private boolean transition(String id, Set<String> allowedFrom, Map<String, String> patch) {
-        RLock lock = redisson.getLock(LOCK_PREFIX + id);
+    private Optional<Instant> transition(String id, Set<String> allowedFrom,
+                                         Map<String, String> patch, Instant now, boolean terminal) {
+        RLock lock = redisson.getLock(keys.jobLock(id));
         lock.lock();
         try {
-            RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
+            RMap<String, String> map = redisson.getMap(keys.job(id), StringCodec.INSTANCE);
             String status = map.get(RedisJobHash.FIELD_STATUS);
             if (status == null || !allowedFrom.contains(status)) {
-                return false; // não existe ou já terminal — não sobrescreve
+                return Optional.empty(); // não existe ou já terminal — não sobrescreve
             }
-            putAllWithTtl(id, patch);
-            return true;
+            write(id, patch, now, terminal);
+            return Optional.of(now);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             }
         }
     }
-
 }

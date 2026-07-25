@@ -44,8 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "async-jobs.coalesce-in-flight=false",
-                "async-jobs.retry-after-seconds=1",
-                "async-jobs.sse.enabled=true"
+                "async-jobs.retry-after-seconds=1"
         })
 class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
 
@@ -86,8 +85,7 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
             return new JobHandler<>() {
                 public String type() { return "e2e-slow"; }
                 public List<String> handle() {
-                    try { GATE.get().await(10, TimeUnit.SECONDS); }
-                    catch (InterruptedException _) { Thread.currentThread().interrupt(); }
+                    TestGate.await(GATE.get());
                     return List.of("done");
                 }
             };

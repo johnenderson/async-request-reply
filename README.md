@@ -21,15 +21,24 @@ Este projeto encapsula esse fluxo:
 
 O projeto segue uma organizacao inspirada em arquitetura hexagonal:
 
-- `core/domain`: modelo de leitura do job; as transicoes atomicas ficam no adapter de persistencia.
+- `core/domain`: modelo de leitura do job (incluindo `JobFailure`); as transicoes atomicas ficam no adapter de persistencia.
 - `core/usecase`: casos de uso da aplicacao, sem dependencia direta de HTTP.
+- `core/service`: regras que atravessam casos de uso — `JobTransitionService` (ponto unico das transicoes) e `StaleJobRecoveryService`.
+- `core/event`: `JobEvent`, publicado a cada transicao.
 - `core/port/in`: portas de entrada usadas pelos adapters.
-- `core/port/out`: portas de saida para persistencia, politica e processamento.
-- `adapter/in/web`: controller HTTP e mapeamento de erros para Problem Details.
-- `adapter/out/persistence`: persistencia dos jobs em Valkey/Redis via Redisson.
-- `adapter/out/processing`: processamento assincrono baseado em `@Async` e dispatch para handlers.
+- `core/port/out`: portas de saida para persistencia, eventos, politica e processamento.
+- `adapter/in/web`: controller HTTP, stream SSE (`sse/`) e mapeamento de erros para Problem Details.
+- `adapter/out/persistence`: persistencia dos jobs, resultado e pub/sub de eventos em Valkey/Redis via Redisson.
+- `adapter/out/processing`: processamento assincrono no executor proprio da lib e dispatch para handlers.
+- `adapter/out/recovery`: agendador da varredura de jobs orfaos.
 - `adapter/out/policy`: politicas padrao de polling e retencao.
+- `config`: propriedades (`AsyncJobsProperties`), em pacote neutro para os adapters nao dependerem de `autoconfigure`.
 - `spi`: contrato que o projeto consumidor implementa para plugar rotinas reais.
+
+O core nao tem anotacao de framework nem component-scan: use cases e services sao
+classes simples, e todo o wiring vive em `autoconfigure` — um **composition root**
+unico e auditavel. Cada bean e `@ConditionalOnMissingBean`, entao o consumidor
+substitui qualquer peca declarando a sua.
 
 ## Componentes principais
 
@@ -125,26 +134,25 @@ Exemplo:
 }
 ```
 
-### Acompanhar por eventos (SSE, opcional)
+### Acompanhar por eventos (SSE)
 
 ```http
 GET /jobs/{id}/events
 Accept: text/event-stream
 ```
 
-Disponivel quando `async-jobs.sse.enabled=true`. O stream entrega um snapshot
-do estado atual e os eventos de transicao ate o estado terminal, quando o
-servidor fecha a conexao:
+O stream entrega um snapshot do estado atual e os eventos de transicao ate o
+estado terminal, quando o servidor fecha a conexao:
 
 ```
 event:status
-data:{"jobId":"...","status":"PROCESSING","percentComplete":null}
+data:{"jobId":"...","status":"PROCESSING","percentComplete":null,"lastUpdatedAt":"2026-06-03T22:00:03Z"}
 
 event:progress
-data:{"jobId":"...","status":"PROCESSING","percentComplete":40}
+data:{"jobId":"...","status":"PROCESSING","percentComplete":40,"lastUpdatedAt":"2026-06-03T22:00:07Z"}
 
 event:complete
-data:{"jobId":"...","resultUrl":"http://localhost:8080/jobs/{id}/result"}
+data:{"jobId":"...","resultUrl":"http://localhost:8080/jobs/{id}/result","lastUpdatedAt":"2026-06-03T22:00:09Z"}
 ```
 
 - `404 Not Found`: job inexistente.
@@ -155,6 +163,9 @@ data:{"jobId":"...","resultUrl":"http://localhost:8080/jobs/{id}/result"}
   transporte adicional, nao um substituto.
 - Na reconexao (automatica no `EventSource`), o servidor reenvia o snapshot;
   como o estado e materializado, nao ha replay de eventos.
+- Todo evento carrega `lastUpdatedAt` (o instante realmente persistido). Numa
+  corrida entre o snapshot inicial e um evento novo, o cliente mantem o de maior
+  timestamp e descarta o mais antigo.
 - A notificacao atravessa instancias via pub/sub do Valkey/Redis: a transicao
   pode acontecer em uma instancia enquanto o stream vive em outra.
 
@@ -221,11 +232,17 @@ Regras importantes:
 
 Para rotinas fire-and-forget existe a variante `AsyncJobHandler`: a lib apenas
 dispara `start(ctx)` e mantem o job em `PROCESSING` ate o worker reportar via
-`JobReporter` (`complete`/`fail`/`progress`/`append`). Atencao: se o worker
-morrer sem reportar, o job fica `PROCESSING` ate o TTL (`async-jobs.result-ttl`)
-— e, com `coalesce-in-flight=true`, novos submits daquele `type` continuarao
-colapsando nesse job "zumbi" durante esse periodo. Workers devem ter timeout
-proprio e reportar `fail` em caso de erro.
+`JobReporter` (`complete`/`fail`/`progress`/`append`).
+
+Todos os metodos do `JobReporter` retornam `boolean`: `false` significa que o
+report foi **recusado** porque o job nao existe mais ou ja esta em estado
+terminal (tipicamente foi cancelado). Um worker que recebe `false` deve parar o
+trabalho em vez de seguir reportando — em especial, `append` e recusado em job
+concluido, para que um worker atrasado nao altere um resultado ja publicado.
+
+Se o worker morrer sem reportar, a recuperacao automatica marca o job como falho
+apos `async-jobs.recovery.processing-timeout`. Rotinas legitimamente longas devem
+chamar `progress` periodicamente para renovar esse prazo.
 
 ## Politicas implementadas
 
@@ -235,6 +252,9 @@ proprio e reportar `fail` em caso de erro.
 - **Idempotencia**: `Idempotency-Key` permite reutilizar o job criado para uma submissao equivalente. Reusar a mesma key com um `type` diferente e rejeitado com `422` (a key so vale para retries da MESMA operacao).
 - **Problem Details**: falhas de dominio sao traduzidas para `ProblemDetail`.
 - **Resultado paginado**: listas retornadas pelos handlers sao expostas com `page`, `size`, `totalElements` e `totalPages`.
+- **Eventos em tempo real**: toda transicao publica um evento e `GET /jobs/{id}/events` (SSE) entrega snapshot + transicoes. Faz parte do contrato, sem flag para desligar.
+- **Execucao isolada**: os jobs rodam em um executor proprio da lib com **threads virtuais**, nunca no executor default da aplicacao; o limite de concorrencia (`async-jobs.processing.concurrency-limit`) e o backpressure.
+- **Recuperacao de jobs orfaos**: um indice de ativos no Valkey/Redis permite reenfileirar jobs que ficaram `PENDING` (instancia caiu antes de processar) e falhar `PROCESSING` sem atualizacao ha muito tempo (worker morreu sem reportar).
 
 Como o submit nao recebe parâmetros, o dedupe/single-flight é por `type`. Operações logicamente distintas devem usar `type`s distintos; filtros de leitura devem ficar no endpoint de resultado.
 
@@ -258,20 +278,39 @@ async-jobs:
   result-ttl: PT1H
   retry-after-seconds: 5
   coalesce-in-flight: false
+  processing:
+    concurrency-limit: 256
+  sse:
+    heartbeat: PT15S
+    max-pending-events: 64
+  recovery:
+    enabled: true
+    scan-interval: PT30S
+    redispatch-after: PT1M
+    processing-timeout: PT15M
+    batch-size: 100
 ```
+
+Nenhuma dessas propriedades e obrigatoria — os valores acima sao os defaults.
 
 Parametros proprios:
 
 | Propriedade | Padrao | Descricao |
 | --- | --- | --- |
-| `async-jobs.storage` | `redis` | Seleciona a auto-configuracao de storage. Com `redis`, a lib registra os adapters Valkey/Redis via Redisson. Para storage proprio, use outro valor e registre beans `JobRepositoryPortOut` e `SingleFlightPortOut` no projeto consumidor. |
+| `async-jobs.storage` | `redis` | Seleciona a auto-configuracao de storage. Com `redis`, a lib registra os adapters Valkey/Redis via Redisson. Para storage proprio, use outro valor e registre beans `JobRepositoryPortOut`, `SingleFlightPortOut`, `JobResultStorePortOut`, `JobEventPublisherPortOut` e `JobEventSubscriberPortOut`; a ausencia dos ports de eventos falha o startup. |
 | `async-jobs.web.enabled` | `true` | Liga/desliga o adapter web servlet (`/jobs`). Quando `false`, a lib funciona apenas como motor/use cases, sem expor endpoints HTTP. |
 | `async-jobs.result-ttl` | `PT1H` | Tempo de retencao dos jobs, resultados, chaves de idempotencia e controle single-flight no Valkey/Redis. Tambem e usado para calcular o header `Expires` a partir da ultima atualizacao do job. Aceita formato `Duration` do Spring, como `PT10M`, `PT1H` ou `P1D`. |
 | `async-jobs.retry-after-seconds` | `5` | Hint enviado no header `Retry-After` em submissao e consulta de status enquanto o job esta ativo. Orienta o client sobre quantos segundos esperar antes do proximo polling. |
 | `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
-| `async-jobs.sse.enabled` | `false` | Liga o stream de eventos `GET /jobs/{id}/events` (SSE) e a publicacao de eventos de transicao via pub/sub. Com storage proprio, registre tambem `JobEventPublisherPortOut`/`JobEventSubscriberPortOut`. |
+| `async-jobs.key-prefix` | vazio | Prefixo de todas as chaves no Valkey/Redis. Use quando mais de uma aplicacao compartilha o mesmo banco: sem prefixo, as duas veem o mesmo indice de jobs ativos e as mesmas chaves de idempotencia. |
+| `async-jobs.processing.concurrency-limit` | `256` | Jobs processados simultaneamente no executor proprio da lib (threads virtuais). Ao saturar, a submissao aguarda vaga — backpressure em vez de acumulo ilimitado. |
 | `async-jobs.sse.heartbeat` | `PT15S` | Intervalo do comentario keep-alive enviado nos streams SSE abertos, para proxies nao derrubarem conexoes ociosas. |
-| `async-jobs.sse.send-pool-size` | nº de CPUs (min 2) | Tamanho do pool que executa os writes (bloqueantes) dos streams SSE. Isola um cliente lento das threads de pub/sub e do scheduler de heartbeat. |
+| `async-jobs.sse.max-pending-events` | `64` | Backlog maximo de eventos por stream. Um cliente que nao drena o socket e desconectado ao estourar esse limite, em vez de acumular memoria. |
+| `async-jobs.recovery.enabled` | `true` | Liga a varredura de jobs orfaos. Desligar significa que um job cuja instancia caiu fica `PENDING` ate o TTL. |
+| `async-jobs.recovery.scan-interval` | `PT30S` | Frequencia da varredura. |
+| `async-jobs.recovery.redispatch-after` | `PT1M` | Tempo em `PENDING` sem avanco antes de reenfileirar o job. |
+| `async-jobs.recovery.processing-timeout` | `PT15M` | Tempo em `PROCESSING` sem atualizacao antes de declarar o job falho. Rotinas legitimamente longas devem reportar progresso para renovar o prazo. |
+| `async-jobs.recovery.batch-size` | `100` | Maximo de jobs inspecionados por varredura. |
 
 Esses hints sao centralizados em `JobPolicyPortOut`. A implementacao default (`DefaultJobPolicyAdapterOut`) evita espalhar no core ou no controller decisoes como intervalo sugerido de polling e data de expiracao do recurso.
 
@@ -329,10 +368,22 @@ A suite de testes registra handlers de exemplo e cobre:
 - cancelamento;
 - `404 Not Found` para job inexistente;
 - single-flight (coalescing), inclusive com submits concorrentes;
-- job com falha (`422` + Problem Detail no status);
+- job com falha (`422` + Problem Detail no status), inclusive com titulo em branco;
 - conflito de `Idempotency-Key` reusada com outro `type` (`422`);
 - hash de job corrompido/parcial degradando para `404` (nao `500`);
+- report recusado em job terminal (`JobReporter` devolvendo `false`);
+- recuperacao de jobs orfaos: reenfileiramento de `PENDING`, falha de `PROCESSING`
+  zumbi e limpeza do indice de ativos;
+- timestamps e `Expires` determinísticos com um `Clock` fixo injetado;
 - fluxo fire-and-forget via `JobReporter`.
+
+A suite tem duas camadas. Os testes **unitarios** cobrem os use cases e services
+com fakes/Mockito, sem subir contexto (rodam em milissegundos): decisao de
+single-flight e dispatch fora do lock, publicacao de evento com o instante
+persistido, politica do reaper por status e tempo de inatividade, guardas do
+`JobReporter`, validacao de `type` no startup e normalizacao de paginacao no
+controller. Os testes de **integracao** (marcados `@Tag("integration")`) usam
+Testcontainers.
 
 Alem dos testes MockMvc, `TomcatEndToEndIntegrationTest` sobe um Tomcat real
 em porta aleatoria (`webEnvironment = RANDOM_PORT`) e exercita o fluxo
@@ -347,4 +398,6 @@ Ultima verificacao local:
 ./mvnw test
 ```
 
-Resultado: `Tests run: 34, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 97, Failures: 0, Errors: 0, Skipped: 0`.
+
+Para rodar só os rápidos: `./mvnw test -Dgroups='!integration'`.

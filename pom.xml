@@ -42,6 +42,14 @@
 			</exclusions>
 		</dependency>
 
+		<!-- Gera spring-configuration-metadata.json: autocomplete das propriedades
+		     async-jobs.* na IDE do projeto consumidor -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-configuration-processor</artifactId>
+			<optional>true</optional>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>

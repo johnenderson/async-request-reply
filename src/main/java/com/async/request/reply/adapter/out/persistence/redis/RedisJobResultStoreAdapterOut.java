@@ -3,7 +3,10 @@ package com.async.request.reply.adapter.out.persistence.redis;
 import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.result.JobResultPage;
+import org.redisson.api.BatchOptions;
+import org.redisson.api.RBatch;
 import org.redisson.api.RList;
+import org.redisson.api.RListAsync;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 import tools.jackson.databind.ObjectMapper;
@@ -23,21 +26,21 @@ import java.util.List;
  */
 public class RedisJobResultStoreAdapterOut implements JobResultStorePortOut {
 
-    private static final String RESULT_SUFFIX = ":result";
-
     private final RedissonClient redisson;
     private final ObjectMapper objectMapper;
+    private final RedisKeys keys;
     private final Duration retention;
 
     public RedisJobResultStoreAdapterOut(RedissonClient redisson, ObjectMapper objectMapper,
-                                         AsyncJobsProperties properties) {
+                                         RedisKeys keys, AsyncJobsProperties properties) {
         this.redisson = redisson;
         this.objectMapper = objectMapper;
+        this.keys = keys;
         this.retention = properties.resultTtl();
     }
 
     private RList<String> list(String id) {
-        return redisson.getList("job:" + id + RESULT_SUFFIX, StringCodec.INSTANCE);
+        return redisson.getList(keys.result(id), StringCodec.INSTANCE);
     }
 
     @Override
@@ -45,13 +48,19 @@ public class RedisJobResultStoreAdapterOut implements JobResultStorePortOut {
         if (items == null || items.isEmpty()) {
             return;
         }
-        RList<String> list = list(id);
         List<String> serialized = new ArrayList<>(items.size());
         for (Object item : items) {
             serialized.add(objectMapper.writeValueAsString(item));
         }
-        list.addAll(serialized); // RPUSH
-        list.expire(retention);
+
+        // RPUSH + EXPIRE em MULTI/EXEC: uma falha entre os dois deixaria a lista
+        // de resultado sem TTL (leak permanente no Redis)
+        RBatch batch = redisson.createBatch(BatchOptions.defaults()
+                .executionMode(BatchOptions.ExecutionMode.REDIS_WRITE_ATOMIC));
+        RListAsync<String> list = batch.getList(keys.result(id), StringCodec.INSTANCE);
+        list.addAllAsync(serialized);
+        list.expireAsync(retention);
+        batch.execute();
     }
 
     @Override

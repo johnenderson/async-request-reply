@@ -88,8 +88,7 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 public String type() { return "cancel-test"; }
                 public List<String> handle() {
                     // bloqueia até o teste liberar — mantém o job ativo de forma determinística
-                    try { SLOW_GATE.get().await(10, TimeUnit.SECONDS); }
-                    catch (InterruptedException _) { Thread.currentThread().interrupt(); }
+                    TestGate.await(SLOW_GATE.get());
                     return List.of("done");
                 }
             };

@@ -26,19 +26,19 @@ import java.util.function.Supplier;
  */
 public class RedisSingleFlightAdapterOut implements SingleFlightPortOut {
 
-    private static final String PREFIX = "inflight:";
-    private static final String LOCK_PREFIX = "lock:inflight:";
-
     private final RedissonClient redisson;
+    private final RedisKeys keys;
     private final Duration ttl;
 
-    public RedisSingleFlightAdapterOut(RedissonClient redisson, AsyncJobsProperties properties) {
+    public RedisSingleFlightAdapterOut(RedissonClient redisson, RedisKeys keys,
+                                       AsyncJobsProperties properties) {
         this.redisson = redisson;
+        this.keys = keys;
         this.ttl = properties.resultTtl();
     }
 
     private RBucket<String> bucket(String resourceKey) {
-        return redisson.getBucket(PREFIX + resourceKey, StringCodec.INSTANCE);
+        return redisson.getBucket(keys.inflight(resourceKey), StringCodec.INSTANCE);
     }
 
     @Override
@@ -58,7 +58,7 @@ public class RedisSingleFlightAdapterOut implements SingleFlightPortOut {
 
     @Override
     public <T> T withLock(String resourceKey, Supplier<T> action) {
-        RLock lock = redisson.getLock(LOCK_PREFIX + resourceKey);
+        RLock lock = redisson.getLock(keys.inflightLock(resourceKey));
         lock.lock();
         try {
             return action.get();

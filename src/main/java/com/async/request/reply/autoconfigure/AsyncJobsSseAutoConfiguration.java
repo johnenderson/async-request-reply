@@ -16,17 +16,15 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Auto-configuration do stream de eventos SSE. Opt-in via
- * {@code async-jobs.sse.enabled=true}. Requer um {@link JobEventSubscriberPortOut}
+ * Auto-configuration do stream de eventos SSE ({@code GET /jobs/{id}/events}),
+ * parte integrante do contrato da lib. Requer um {@link JobEventSubscriberPortOut}
  * no contexto — com {@code async-jobs.storage=redis} a lib registra o adapter
- * pub/sub; para storage próprio, o consumidor registra o bean dele. A ausência
- * do bean com SSE ligado falha o startup (fail-fast), em vez de omitir o
- * endpoint em silêncio.
+ * pub/sub; para storage próprio, o consumidor registra os beans dele. A ausência
+ * falha o startup com mensagem explícita, em vez de omitir o endpoint em silêncio.
  */
 @AutoConfiguration(after = {AsyncJobsRedisAutoConfiguration.class,
         AsyncJobsAutoConfiguration.class,
         AsyncJobsWebAutoConfiguration.class})
-@ConditionalOnProperty(name = "async-jobs.sse.enabled", havingValue = "true")
 public class AsyncJobsSseAutoConfiguration {
 
     @Bean
@@ -36,7 +34,7 @@ public class AsyncJobsSseAutoConfiguration {
         JobEventSubscriberPortOut subscriber = subscriberProvider.getIfAvailable();
         if (subscriber == null) {
             throw new IllegalStateException(
-                    "async-jobs.sse.enabled=true exige um JobEventSubscriberPortOut no contexto. "
+                    "O stream de eventos exige um JobEventSubscriberPortOut no contexto. "
                             + "Com async-jobs.storage=redis a lib registra o adapter pub/sub; para storage "
                             + "proprio, registre beans JobEventPublisherPortOut e JobEventSubscriberPortOut.");
         }

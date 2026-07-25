@@ -21,8 +21,15 @@ import org.springframework.scheduling.annotation.Async;
  *
  * Todas as transições (start/complete/fail) passam pelo
  * {@link JobTransitionService}, que garante evento + release do single-flight.
+ *
+ * <p>Roda no executor próprio da lib ({@code asyncJobsExecutor}, threads
+ * virtuais) — nunca no executor default da aplicação, para que rotinas de longa
+ * duração não concorram com o {@code @Async} do projeto consumidor.</p>
  */
 public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
+
+    /** Nome do executor dedicado da lib (threads virtuais). */
+    public static final String EXECUTOR_BEAN = "asyncJobsExecutor";
 
     private final JobHandlerRegistry registry;
     private final JobTransitionService transition;
@@ -38,7 +45,7 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
     }
 
     @Override
-    @Async
+    @Async(AsyncJobProcessorAdapterOut.EXECUTOR_BEAN)
     public void process(Job job) {
         // transição atômica PENDING → PROCESSING; se falhar, já foi cancelado/terminal
         if (!transition.start(job)) {

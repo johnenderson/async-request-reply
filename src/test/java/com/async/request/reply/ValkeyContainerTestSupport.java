@@ -1,5 +1,6 @@
 package com.async.request.reply;
 
+import org.junit.jupiter.api.Tag;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -13,6 +14,7 @@ import org.testcontainers.containers.wait.strategy.Wait;
  * junit-jupiter não existe; o container é reutilizado por todas as classes e
  * encerrado no shutdown da JVM (Ryuk).
  */
+@Tag("integration")
 abstract class ValkeyContainerTestSupport {
 
     static final GenericContainer<?> VALKEY =

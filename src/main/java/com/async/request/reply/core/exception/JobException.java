@@ -7,12 +7,15 @@ import com.async.request.reply.core.enums.ErrorType;
  * ({@code title}, {@code detail} e um {@link ErrorType}) — nenhuma dependência
  * de HTTP. A tradução para Problem Detail / status code é responsabilidade
  * do adapter web.
+ *
+ * <p>É abstrata: cada subclasse declara explicitamente a sua classificação, em
+ * vez de herdar um default genérico.</p>
  */
-public class JobException extends RuntimeException {
+public abstract class JobException extends RuntimeException {
 
     private final String title;
 
-    public JobException(String title, String detail) {
+    protected JobException(String title, String detail) {
         super(detail);
         this.title = title;
     }
@@ -21,8 +24,6 @@ public class JobException extends RuntimeException {
         return title;
     }
 
-    /** Classificação padrão: erro interno. Subclasses sobrescrevem. */
-    public ErrorType errorType() {
-        return ErrorType.INTERNAL;
-    }
+    /** Classificação de domínio, traduzida para status HTTP pelo adapter web. */
+    public abstract ErrorType errorType();
 }

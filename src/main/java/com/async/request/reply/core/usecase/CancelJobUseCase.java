@@ -5,14 +5,12 @@ import com.async.request.reply.core.enums.CancelResult;
 import com.async.request.reply.core.port.in.CancelJobPortIn;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.service.JobTransitionService;
-import org.springframework.stereotype.Service;
 
 import java.util.Optional;
 
 /**
  * Implementação do {@link CancelJobPortIn}.
  */
-@Service
 public class CancelJobUseCase implements CancelJobPortIn {
 
     private final JobRepositoryPortOut repository;

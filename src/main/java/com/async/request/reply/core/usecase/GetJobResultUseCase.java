@@ -5,13 +5,11 @@ import com.async.request.reply.core.port.in.GetJobResultPortIn;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.result.JobResultView;
-import org.springframework.stereotype.Service;
 
 /**
  * Implementação do {@link GetJobResultPortIn}. A página vem direto do result
  * store (paginação nativa), e não da carga do resultado inteiro em memória.
  */
-@Service
 public class GetJobResultUseCase implements GetJobResultPortIn {
 
     private final JobRepositoryPortOut repository;

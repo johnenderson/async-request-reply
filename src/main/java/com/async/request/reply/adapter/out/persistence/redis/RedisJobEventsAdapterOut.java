@@ -25,18 +25,17 @@ import java.util.function.Consumer;
  */
 public class RedisJobEventsAdapterOut implements JobEventPublisherPortOut, JobEventSubscriberPortOut {
 
-    private static final String TOPIC_PREFIX = "job:";
-    private static final String TOPIC_SUFFIX = ":events";
-
     private final RedissonClient redisson;
+    private final RedisKeys keys;
     private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
-    public RedisJobEventsAdapterOut(RedissonClient redisson) {
+    public RedisJobEventsAdapterOut(RedissonClient redisson, RedisKeys keys) {
         this.redisson = redisson;
+        this.keys = keys;
     }
 
     private RTopic topic(String jobId) {
-        return redisson.getTopic(TOPIC_PREFIX + jobId + TOPIC_SUFFIX, StringCodec.INSTANCE);
+        return redisson.getTopic(keys.events(jobId), StringCodec.INSTANCE);
     }
 
     @Override

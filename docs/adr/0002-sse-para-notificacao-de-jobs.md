@@ -31,8 +31,11 @@ contrato existente:
 - A assinatura acontece **antes** da leitura do snapshot: uma transição no
   meio gera no pior caso um duplicado inofensivo (eventos carregam estado,
   não deltas), nunca uma perda.
-- **Opt-in**: `async-jobs.sse.enabled=true` (default `false`). Com SSE
-  desligado, o publisher é no-op e nem endpoint nem assinaturas existem.
+- ~~**Opt-in**: `async-jobs.sse.enabled=true` (default `false`)~~ →
+  **revisto em 2026-07**: o stream passou a fazer parte do contrato e a flag foi
+  removida. A lib nunca foi publicada com a flag, então não há migração. Storage
+  próprio agora precisa fornecer `JobEventPublisherPortOut` e
+  `JobEventSubscriberPortOut` (a ausência falha o startup).
 
 ## Consequências
 

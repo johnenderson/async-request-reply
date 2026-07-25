@@ -8,7 +8,5 @@ public enum ErrorType {
     /** Entrada inválida fornecida pelo cliente. */
     VALIDATION,
     /** A request conflita com um estado existente (ex: Idempotency-Key reusada com outra operação). */
-    CONFLICT,
-    /** Erro interno inesperado. */
-    INTERNAL
+    CONFLICT
 }
