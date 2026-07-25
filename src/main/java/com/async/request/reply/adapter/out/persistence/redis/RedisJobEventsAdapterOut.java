@@ -7,6 +7,7 @@ import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.function.Consumer;
 
@@ -18,6 +19,9 @@ import java.util.function.Consumer;
  * instância que processa o job enquanto a assinatura (ex: stream SSE) vive em
  * outra. Sem retenção: quem assina recebe só o que for publicado dali em
  * diante — por isso o consumo começa com um snapshot do estado atual.</p>
+ *
+ * <p>O mapper é <b>próprio</b> (não o da aplicação): o formato de wire interno
+ * dos eventos não deve depender da config Jackson do consumidor.</p>
  */
 public class RedisJobEventsAdapterOut implements JobEventPublisherPortOut, JobEventSubscriberPortOut {
 
@@ -25,11 +29,10 @@ public class RedisJobEventsAdapterOut implements JobEventPublisherPortOut, JobEv
     private static final String TOPIC_SUFFIX = ":events";
 
     private final RedissonClient redisson;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
-    public RedisJobEventsAdapterOut(RedissonClient redisson, ObjectMapper objectMapper) {
+    public RedisJobEventsAdapterOut(RedissonClient redisson) {
         this.redisson = redisson;
-        this.objectMapper = objectMapper;
     }
 
     private RTopic topic(String jobId) {

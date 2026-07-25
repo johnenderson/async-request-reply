@@ -13,7 +13,7 @@ import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
-import com.async.request.reply.core.service.JobTerminalTransitionService;
+import com.async.request.reply.core.service.JobTransitionService;
 import com.async.request.reply.spi.Routine;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -22,6 +22,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.scheduling.annotation.EnableAsync;
 
+import java.time.Clock;
 import java.util.List;
 
 /**
@@ -56,10 +57,8 @@ public class AsyncJobsAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     JobProcessorPortOut jobProcessorPortOut(JobHandlerRegistry registry,
-                                            JobRepositoryPortOut repository,
-                                            JobTerminalTransitionService terminal,
-                                            JobEventPublisherPortOut events) {
-        return new AsyncJobProcessorAdapterOut(registry, repository, terminal, events);
+                                            JobTransitionService transition) {
+        return new AsyncJobProcessorAdapterOut(registry, transition);
     }
 
     /** Fallback no-op: com SSE desligado, publicar eventos não custa nada. */
@@ -67,6 +66,13 @@ public class AsyncJobsAutoConfiguration {
     @ConditionalOnMissingBean
     JobEventPublisherPortOut jobEventPublisherPortOut() {
         return event -> { };
+    }
+
+    /** Fonte de tempo injetável — facilita testar TTL/expiração de forma determinística. */
+    @Bean
+    @ConditionalOnMissingBean
+    Clock asyncJobsClock() {
+        return Clock.systemUTC();
     }
 
     @Bean

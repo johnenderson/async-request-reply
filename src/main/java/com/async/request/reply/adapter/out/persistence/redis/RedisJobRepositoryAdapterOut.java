@@ -1,8 +1,8 @@
 package com.async.request.reply.adapter.out.persistence.redis;
 
-import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.adapter.out.persistence.redis.dto.RedisJobHash;
 import com.async.request.reply.adapter.out.persistence.redis.mapper.RedisJobMapper;
+import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.JobStatus;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
@@ -15,6 +15,7 @@ import org.redisson.api.RMapAsync;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.StringCodec;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -46,20 +47,22 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
     private final RedissonClient redisson;
     private final RedisJobMapper jobMapper;
     private final Duration retention;
+    private final Clock clock;
 
     public RedisJobRepositoryAdapterOut(RedissonClient redisson,
                                         RedisJobMapper jobMapper,
-                                        AsyncJobsProperties properties) {
+                                        AsyncJobsProperties properties,
+                                        Clock clock) {
         this.redisson = redisson;
         this.jobMapper = jobMapper;
         this.retention = properties.resultTtl();
+        this.clock = clock;
     }
 
     @Override
     public Job create(String id, String type, String idempotencyKey) {
         if (idempotencyKey == null) {
-            writeHash(id, type);
-            return new Job(id, type);
+            return writeHash(id, type);
         }
 
         RLock lock = redisson.getLock(IDEM_LOCK_PREFIX + idempotencyKey);
@@ -75,9 +78,9 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
                 idem.delete();
             }
 
-            writeHash(id, type);
+            Job job = writeHash(id, type);
             idem.set(id, retention);
-            return new Job(id, type);
+            return job;
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
@@ -85,8 +88,10 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
         }
     }
 
-    private void writeHash(String id, String type) {
-        putAllWithTtl(id, RedisJobHash.pending(type, Instant.now()).toMap());
+    private Job writeHash(String id, String type) {
+        Instant now = clock.instant();
+        putAllWithTtl(id, RedisJobHash.pending(type, now).toMap());
+        return Job.pending(id, type, now);
     }
 
     /**
@@ -106,7 +111,16 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
     public Optional<Job> findById(String id) {
         RMap<String, String> map = redisson.getMap(JOB_PREFIX + id, StringCodec.INSTANCE);
         Map<String, String> h = map.readAllMap();
-        return h.isEmpty() ? Optional.empty() : Optional.of(jobMapper.toDomain(id, h));
+        if (h.isEmpty() || h.get(RedisJobHash.FIELD_STATUS) == null) {
+            return Optional.empty(); // inexistente ou hash sem o campo-chave
+        }
+        try {
+            return Optional.of(jobMapper.toDomain(id, h));
+        } catch (RuntimeException _) {
+            // hash corrompido/parcial (enum ou timestamp inválido) → trata como
+            // inexistente em vez de propagar 500 para o cliente
+            return Optional.empty();
+        }
     }
 
     @Override
@@ -118,22 +132,22 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
     @Override
     public boolean start(String id) {
-        return transition(id, Set.of(JobStatus.PENDING.name()), RedisJobHash.processing(Instant.now()).toMap());
+        return transition(id, Set.of(JobStatus.PENDING.name()), RedisJobHash.processing(clock.instant()).toMap());
     }
 
     @Override
     public boolean complete(String id) {
-        return transition(id, ACTIVE, RedisJobHash.completed(Instant.now()).toMap());
+        return transition(id, ACTIVE, RedisJobHash.completed(clock.instant()).toMap());
     }
 
     @Override
     public boolean fail(String id, String title, String detail) {
-        return transition(id, ACTIVE, RedisJobHash.failed(title, detail, Instant.now()).toMap());
+        return transition(id, ACTIVE, RedisJobHash.failed(title, detail, clock.instant()).toMap());
     }
 
     @Override
     public boolean cancel(String id) {
-        return transition(id, ACTIVE, RedisJobHash.cancelled(Instant.now()).toMap());
+        return transition(id, ACTIVE, RedisJobHash.cancelled(clock.instant()).toMap());
     }
 
     @Override
@@ -141,7 +155,7 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
         // apenas PROCESSING: progresso implica execução em andamento, e o
         // evento publicado nunca anuncia um status diferente do persistido
         return transition(id, Set.of(JobStatus.PROCESSING.name()),
-                RedisJobHash.progress(percent, Instant.now()).toMap());
+                RedisJobHash.progress(percent, clock.instant()).toMap());
     }
 
     // --- helpers -----------------------------------------------------------

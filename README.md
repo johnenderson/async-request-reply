@@ -271,6 +271,7 @@ Parametros proprios:
 | `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
 | `async-jobs.sse.enabled` | `false` | Liga o stream de eventos `GET /jobs/{id}/events` (SSE) e a publicacao de eventos de transicao via pub/sub. Com storage proprio, registre tambem `JobEventPublisherPortOut`/`JobEventSubscriberPortOut`. |
 | `async-jobs.sse.heartbeat` | `PT15S` | Intervalo do comentario keep-alive enviado nos streams SSE abertos, para proxies nao derrubarem conexoes ociosas. |
+| `async-jobs.sse.send-pool-size` | nº de CPUs (min 2) | Tamanho do pool que executa os writes (bloqueantes) dos streams SSE. Isola um cliente lento das threads de pub/sub e do scheduler de heartbeat. |
 
 Esses hints sao centralizados em `JobPolicyPortOut`. A implementacao default (`DefaultJobPolicyAdapterOut`) evita espalhar no core ou no controller decisoes como intervalo sugerido de polling e data de expiracao do recurso.
 
@@ -330,6 +331,7 @@ A suite de testes registra handlers de exemplo e cobre:
 - single-flight (coalescing), inclusive com submits concorrentes;
 - job com falha (`422` + Problem Detail no status);
 - conflito de `Idempotency-Key` reusada com outro `type` (`422`);
+- hash de job corrompido/parcial degradando para `404` (nao `500`);
 - fluxo fire-and-forget via `JobReporter`.
 
 Alem dos testes MockMvc, `TomcatEndToEndIntegrationTest` sobe um Tomcat real
@@ -345,4 +347,4 @@ Ultima verificacao local:
 ./mvnw test
 ```
 
-Resultado: `Tests run: 33, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 34, Failures: 0, Errors: 0, Skipped: 0`.

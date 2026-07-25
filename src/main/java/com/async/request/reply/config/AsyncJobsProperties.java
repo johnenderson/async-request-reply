@@ -33,11 +33,11 @@ public record AsyncJobsProperties(
                     "async-jobs.retry-after-seconds deve ser positivo, mas foi " + retryAfterSeconds);
         }
 
-        sse = (sse == null) ? new Sse(false, null) : sse;
+        sse = (sse == null) ? new Sse(false, null, null) : sse;
     }
 
     /** Configuração do stream de eventos SSE ({@code GET /jobs/{id}/events}). */
-    public record Sse(boolean enabled, Duration heartbeat) {
+    public record Sse(boolean enabled, Duration heartbeat, Integer sendPoolSize) {
 
         public Sse {
             heartbeat = (heartbeat == null) ? Duration.ofSeconds(15) : heartbeat;
@@ -45,6 +45,12 @@ public record AsyncJobsProperties(
                 throw new IllegalArgumentException(
                         "async-jobs.sse.heartbeat deve ser positivo (ex.: PT15S), mas foi " + heartbeat);
             }
+
+            // Pool que executa os writes bloqueantes dos streams; isola um cliente
+            // lento das threads de pub/sub e do scheduler de heartbeat.
+            sendPoolSize = (sendPoolSize == null || sendPoolSize <= 0)
+                    ? Math.max(2, Runtime.getRuntime().availableProcessors())
+                    : sendPoolSize;
         }
     }
 }

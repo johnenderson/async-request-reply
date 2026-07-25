@@ -201,17 +201,21 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(stream.body(), StandardCharsets.UTF_8))) {
 
-            // snapshot chega antes de qualquer transição terminal
+            // snapshot chega antes de qualquer transição terminal, com timestamp
+            // (permite ao cliente reordenar/descartar em corrida snapshot vs evento)
             readUntil(reader, line -> line.startsWith("event:status"));
             String snapshot = readUntil(reader, line -> line.startsWith("data:")).getLast();
             assertThat(snapshot).contains(jobId);
+            assertThat(JsonPath.<String>read(snapshot.substring("data:".length()), "$.lastUpdatedAt"))
+                    .isNotBlank();
 
             GATE.get().countDown(); // libera o handler → COMPLETED → push
 
             readUntil(reader, line -> line.startsWith("event:complete"));
-            String completeData = readUntil(reader, line -> line.startsWith("data:")).getLast();
-            String resultUrl = JsonPath.read(completeData.substring("data:".length()), "$.resultUrl");
-            assertThat(resultUrl).isEqualTo(url("/jobs/" + jobId + "/result"));
+            String completeData = readUntil(reader, line -> line.startsWith("data:")).getLast().substring("data:".length());
+            assertThat(JsonPath.<String>read(completeData, "$.resultUrl")).isEqualTo(url("/jobs/" + jobId + "/result"));
+            assertThat(JsonPath.<String>read(completeData, "$.lastUpdatedAt")).isNotBlank();
+            String resultUrl = JsonPath.read(completeData, "$.resultUrl");
 
             awaitStreamEnd(reader); // evento terminal fecha o stream no servidor
 

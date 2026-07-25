@@ -1,12 +1,8 @@
 package com.async.request.reply.adapter.out.processing;
 
 import com.async.request.reply.core.domain.Job;
-import com.async.request.reply.core.enums.JobStatus;
-import com.async.request.reply.core.event.JobEvent;
-import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
-import com.async.request.reply.core.port.out.JobRepositoryPortOut;
-import com.async.request.reply.core.service.JobTerminalTransitionService;
+import com.async.request.reply.core.service.JobTransitionService;
 import com.async.request.reply.spi.AsyncJobHandler;
 import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobHandler;
@@ -23,24 +19,17 @@ import org.springframework.scheduling.annotation.Async;
  *       PROCESSING até o worker reportar via JobReporter.</li>
  * </ul>
  *
- * As transições terminais (complete/fail) passam pelo
- * {@link JobTerminalTransitionService}, que garante evento + release do
- * single-flight junto com a transição.
+ * Todas as transições (start/complete/fail) passam pelo
+ * {@link JobTransitionService}, que garante evento + release do single-flight.
  */
 public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
 
     private final JobHandlerRegistry registry;
-    private final JobRepositoryPortOut repository;
-    private final JobTerminalTransitionService terminal;
-    private final JobEventPublisherPortOut events;
+    private final JobTransitionService transition;
 
-    public AsyncJobProcessorAdapterOut(JobHandlerRegistry registry, JobRepositoryPortOut repository,
-                                       JobTerminalTransitionService terminal,
-                                       JobEventPublisherPortOut events) {
+    public AsyncJobProcessorAdapterOut(JobHandlerRegistry registry, JobTransitionService transition) {
         this.registry = registry;
-        this.repository = repository;
-        this.terminal = terminal;
-        this.events = events;
+        this.transition = transition;
     }
 
     @Override
@@ -52,27 +41,26 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
     @Async
     public void process(Job job) {
         // transição atômica PENDING → PROCESSING; se falhar, já foi cancelado/terminal
-        if (!repository.start(job.getId())) {
+        if (!transition.start(job)) {
             return;
         }
-        events.publish(new JobEvent(job.getId(), JobStatus.PROCESSING, null));
 
         Routine routine = registry.find(job.getType()).orElse(null);
         if (routine == null) {
-            terminal.fail(job, "Unknown job type",
+            transition.fail(job, "Unknown job type",
                     "Nenhuma routine registrada para o type '" + job.getType() + "'.");
             return;
         }
 
         try {
             switch (routine) {
-                case JobHandler<?> sync -> terminal.complete(job, sync.handle());
+                case JobHandler<?> sync -> transition.complete(job, sync.handle());
                 case AsyncJobHandler async -> runAsync(async, job);
-                default -> terminal.fail(job, "Unsupported routine",
+                default -> transition.fail(job, "Unsupported routine",
                         "Tipo de routine não suportado: " + routine.getClass());
             }
         } catch (Exception e) {
-            terminal.fail(job, "Processing error", e.getMessage());
+            transition.fail(job, "Processing error", e.getMessage());
         }
     }
 

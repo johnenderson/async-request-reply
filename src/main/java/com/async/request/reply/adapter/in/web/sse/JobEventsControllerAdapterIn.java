@@ -17,20 +17,32 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.Queue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Adapter in (web/SSE): {@code GET /jobs/{id}/events} abre um stream
  * {@code text/event-stream} que entrega um snapshot do estado atual e os
  * eventos de transição até o estado terminal, quando o stream é fechado.
  *
+ * <p>Os writes ({@link SseEmitter#send}) são bloqueantes; para não travar as
+ * threads compartilhadas de pub/sub (Redisson) e do scheduler de heartbeat, eles
+ * rodam num <b>pool dedicado</b>, serializados por sessão (ordem preservada, um
+ * write por vez). Um cliente lento consome no máximo uma thread do pool — não
+ * atrasa a entrega de eventos de outros jobs nem o heartbeat de outros streams.</p>
+ *
  * <p>Fica FORA do component-scan do adapter web: o bean é registrado pela
  * auto-configuration do SSE somente quando {@code async-jobs.sse.enabled=true}.
  * A {@code resultUrl} é resolvida na thread da request — os listeners rodam em
- * threads do pub/sub, sem request context para o {@link JobUriBuilder}.</p>
+ * threads de pub/sub, sem request context para o {@link JobUriBuilder}.</p>
  */
 @RestController
 @RequestMapping("/jobs")
@@ -40,7 +52,8 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
     private final JobUriBuilder uris;
     private final long timeoutMillis;
     private final Duration heartbeatInterval;
-    private final ScheduledExecutorService heartbeats;
+    private final ScheduledExecutorService heartbeatScheduler;
+    private final ExecutorService sendPool;
 
     public JobEventsControllerAdapterIn(WatchJobPortIn watchJob, JobUriBuilder uris,
                                         AsyncJobsProperties properties) {
@@ -48,23 +61,22 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
         this.uris = uris;
         this.timeoutMillis = properties.resultTtl().toMillis();
         this.heartbeatInterval = properties.sse().heartbeat();
-        this.heartbeats = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "async-jobs-sse-heartbeat");
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(
+                daemonFactory("async-jobs-sse-heartbeat"));
+        this.sendPool = Executors.newFixedThreadPool(
+                properties.sse().sendPoolSize(), daemonFactory("async-jobs-sse-send"));
     }
 
     @GetMapping(path = "/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> events(@PathVariable String id) {
         SseEmitter emitter = new SseEmitter(timeoutMillis);
-        SseSession session = new SseSession(emitter, uris.result(id).toString());
+        SseSession session = new SseSession(emitter, uris.result(id).toString(), new SerialExecutor(sendPool));
 
         return switch (watchJob.execute(id, session::deliver)) {
             case JobWatchView.NotFound _ -> ResponseEntity.notFound().build();
             case JobWatchView.Watching(var subscription) -> {
                 session.attach(subscription);
-                session.scheduleHeartbeat(heartbeats, heartbeatInterval);
+                session.scheduleHeartbeat(heartbeatScheduler, heartbeatInterval);
                 emitter.onCompletion(session::close);
                 emitter.onTimeout(session::close);
                 emitter.onError(_ -> session.close());
@@ -75,40 +87,114 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
 
     @Override
     public void destroy() {
-        heartbeats.shutdownNow();
+        heartbeatScheduler.shutdownNow();
+        sendPool.shutdownNow();
+    }
+
+    private static ThreadFactory daemonFactory(String prefix) {
+        AtomicInteger seq = new AtomicInteger();
+        return runnable -> {
+            Thread thread = new Thread(runnable, prefix + "-" + seq.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     /**
-     * Estado de um stream aberto. Os sends são serializados por
-     * {@code synchronized}: snapshot (thread da request), eventos do pub/sub e
-     * heartbeats chegam de threads diferentes.
+     * Executor que roda tarefas de uma sessão uma-a-uma sobre um pool
+     * compartilhado (preserva ordem e exclusão mútua sem thread dedicada por
+     * sessão). Do javadoc de {@link Executor}.
+     */
+    private static final class SerialExecutor implements Executor {
+
+        private final Queue<Runnable> tasks = new ArrayDeque<>();
+        private final Executor delegate;
+        private Runnable active;
+
+        SerialExecutor(Executor delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public synchronized void execute(Runnable command) {
+            tasks.add(() -> {
+                try {
+                    command.run();
+                } finally {
+                    scheduleNext();
+                }
+            });
+            if (active == null) {
+                scheduleNext();
+            }
+        }
+
+        private synchronized void scheduleNext() {
+            if ((active = tasks.poll()) != null) {
+                delegate.execute(active);
+            }
+        }
+    }
+
+    /**
+     * Estado de um stream aberto. Os writes rodam serializados (via
+     * {@link SerialExecutor}); {@code closed} é volátil para os fast-paths e o
+     * teardown é {@code synchronized}.
      */
     private static final class SseSession {
 
         private final SseEmitter emitter;
         private final String resultUrl;
+        private final Executor serial;
+        private volatile boolean closed;
         private AutoCloseable subscription;
         private ScheduledFuture<?> heartbeat;
-        private boolean closed;
 
-        private SseSession(SseEmitter emitter, String resultUrl) {
+        private SseSession(SseEmitter emitter, String resultUrl, Executor serial) {
             this.emitter = emitter;
             this.resultUrl = resultUrl;
+            this.serial = serial;
         }
 
-        synchronized void deliver(JobEvent event) {
+        /** Enfileira o envio (não bloqueia a thread chamadora — request ou pub/sub). */
+        void deliver(JobEvent event) {
+            if (closed) {
+                return;
+            }
+            serial.execute(() -> send(event));
+        }
+
+        private void send(JobEvent event) {
             if (closed) {
                 return;
             }
             try {
                 emitter.send(toSse(event));
             } catch (Exception _) {
-                release(); // client desconectou — só libera recursos
+                close(); // client desconectou
                 return;
             }
             if (event.terminal()) {
-                release();
+                close();
                 emitter.complete(); // fecha o stream após o evento terminal
+            }
+        }
+
+        private void enqueueHeartbeat() {
+            if (closed) {
+                return;
+            }
+            serial.execute(this::sendHeartbeat);
+        }
+
+        private void sendHeartbeat() {
+            if (closed) {
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event().comment("keepalive"));
+            } catch (Exception _) {
+                close();
             }
         }
 
@@ -125,25 +211,10 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
                 return;
             }
             heartbeat = scheduler.scheduleAtFixedRate(
-                    this::sendHeartbeat, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
-        }
-
-        private synchronized void sendHeartbeat() {
-            if (closed) {
-                return;
-            }
-            try {
-                emitter.send(SseEmitter.event().comment("keepalive"));
-            } catch (Exception _) {
-                release();
-            }
+                    this::enqueueHeartbeat, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
         }
 
         synchronized void close() {
-            release();
-        }
-
-        private void release() {
             if (closed) {
                 return;
             }
@@ -161,7 +232,8 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
                 case PENDING -> statusEvent("status", event);
                 case PROCESSING -> statusEvent(event.percentComplete() == null ? "status" : "progress", event);
                 case COMPLETED -> SseEmitter.event().name("complete")
-                        .data(new JobEventCompleteResponse(event.jobId(), resultUrl), MediaType.APPLICATION_JSON);
+                        .data(new JobEventCompleteResponse(event.jobId(), resultUrl, event.lastUpdatedAt()),
+                                MediaType.APPLICATION_JSON);
                 case FAILED -> statusEvent("failed", event);
                 case CANCELLED -> statusEvent("cancelled", event);
             };
@@ -169,8 +241,8 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
 
         private static SseEmitter.SseEventBuilder statusEvent(String name, JobEvent event) {
             return SseEmitter.event().name(name)
-                    .data(new JobEventStatusResponse(event.jobId(), event.status(), event.percentComplete()),
-                            MediaType.APPLICATION_JSON);
+                    .data(new JobEventStatusResponse(event.jobId(), event.status(),
+                            event.percentComplete(), event.lastUpdatedAt()), MediaType.APPLICATION_JSON);
         }
 
         private static void closeQuietly(AutoCloseable subscription) {
