@@ -2,8 +2,8 @@ package com.async.request.reply.adapter.out.persistence.redis.mapper;
 
 import com.async.request.reply.adapter.out.persistence.redis.dto.RedisJobHash;
 import com.async.request.reply.core.domain.Job;
+import com.async.request.reply.core.domain.JobFailure;
 import com.async.request.reply.core.enums.JobStatus;
-import com.async.request.reply.core.exception.JobFailedException;
 
 import java.time.Instant;
 import java.util.Map;
@@ -12,8 +12,8 @@ public class RedisJobMapper {
 
     public Job toDomain(String id, Map<String, String> h) {
         String errorTitle = h.get(RedisJobHash.FIELD_ERROR_TITLE);
-        JobFailedException failure = (errorTitle != null && !errorTitle.isBlank())
-                ? new JobFailedException(errorTitle, h.get(RedisJobHash.FIELD_ERROR_DETAIL))
+        JobFailure failure = (errorTitle != null && !errorTitle.isBlank())
+                ? new JobFailure(errorTitle, h.get(RedisJobHash.FIELD_ERROR_DETAIL))
                 : null;
         String percent = h.get(RedisJobHash.FIELD_PERCENT_COMPLETE);
         return Job.restore(

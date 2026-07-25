@@ -19,6 +19,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Clock;
+
 /**
  * Auto-configuration do storage Redis/Valkey (via Redisson). Só ativa quando o
  * Redisson está no classpath e {@code async-jobs.storage=redis} (default). Um
@@ -40,8 +42,9 @@ public class AsyncJobsRedisAutoConfiguration {
     @ConditionalOnMissingBean
     JobRepositoryPortOut jobRepositoryPortOut(RedissonClient redisson,
                                               RedisJobMapper jobMapper,
-                                              AsyncJobsProperties properties) {
-        return new RedisJobRepositoryAdapterOut(redisson, jobMapper, properties);
+                                              AsyncJobsProperties properties,
+                                              Clock clock) {
+        return new RedisJobRepositoryAdapterOut(redisson, jobMapper, properties, clock);
     }
 
     @Bean
@@ -58,11 +61,15 @@ public class AsyncJobsRedisAutoConfiguration {
         return new RedisSingleFlightAdapterOut(redisson, properties);
     }
 
-    /** Pub/sub de eventos de job — só quando o stream SSE está habilitado. */
+    /**
+     * Pub/sub de eventos de job — só quando o stream SSE está habilitado.
+     * Usa um mapper próprio (não o da aplicação) para que o formato de wire
+     * interno dos eventos não dependa da config Jackson do consumidor.
+     */
     @Bean
     @ConditionalOnProperty(name = "async-jobs.sse.enabled", havingValue = "true")
     @ConditionalOnMissingBean({JobEventPublisherPortOut.class, JobEventSubscriberPortOut.class})
-    RedisJobEventsAdapterOut redisJobEventsAdapterOut(RedissonClient redisson, ObjectMapper objectMapper) {
-        return new RedisJobEventsAdapterOut(redisson, objectMapper);
+    RedisJobEventsAdapterOut redisJobEventsAdapterOut(RedissonClient redisson) {
+        return new RedisJobEventsAdapterOut(redisson);
     }
 }

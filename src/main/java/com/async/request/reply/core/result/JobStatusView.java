@@ -1,6 +1,6 @@
 package com.async.request.reply.core.result;
 
-import com.async.request.reply.core.exception.JobException;
+import com.async.request.reply.core.domain.JobFailure;
 
 import java.time.Instant;
 
@@ -17,7 +17,7 @@ public sealed interface JobStatusView {
     record Completed(Instant expiresAt) implements JobStatusView {}
 
     /** FAILED: erro terminal; o adapter web o renderiza como Problem Detail. */
-    record Failed(JobException error) implements JobStatusView {}
+    record Failed(JobFailure error) implements JobStatusView {}
 
     /** CANCELLED: o job foi cancelado. */
     record Cancelled() implements JobStatusView {}

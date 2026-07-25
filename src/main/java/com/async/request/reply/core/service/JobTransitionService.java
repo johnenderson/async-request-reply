@@ -11,26 +11,19 @@ import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
 import com.async.request.reply.core.port.out.SingleFlightPortOut;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Ponto único das transições terminais (complete/fail/cancel). Toda transição
- * terminal tem TRÊS efeitos que precisam andar juntos, e só quando a transição
- * atômica teve sucesso:
- *
- * <ol>
- *   <li>a transição de estado no repositório (check-and-set);</li>
- *   <li>a publicação do {@link JobEvent} (streams SSE etc.);</li>
- *   <li>a liberação do guard de single-flight (compare-and-delete).</li>
- * </ol>
- *
- * Concentrar a invariante aqui impede que um novo caminho terminal esqueça um
- * dos efeitos. As variantes com {@link Job} evitam lookup extra; as variantes
- * por id buscam o job apenas quando o coalescing está habilitado.
+ * Ponto único das transições de estado de um job. Toda transição bem-sucedida
+ * publica um {@link JobEvent} (e só quando o check-and-set atômico teve
+ * sucesso); as terminais (complete/fail/cancel) ainda liberam o guard de
+ * single-flight (compare-and-delete). Concentrar isso aqui impede que um novo
+ * caminho esqueça de publicar o evento ou de liberar o guard.
  */
 @Service
-public class JobTerminalTransitionService {
+public class JobTransitionService {
 
     private final JobRepositoryPortOut repository;
     private final JobResultStorePortOut resultStore;
@@ -38,20 +31,43 @@ public class JobTerminalTransitionService {
     private final SingleFlightPortOut singleFlight;
     private final CoalescingKeyPortOut coalescingKey;
     private final JobSubmissionPolicyPortOut submissionPolicy;
+    private final Clock clock;
 
-    public JobTerminalTransitionService(JobRepositoryPortOut repository,
-                                        JobResultStorePortOut resultStore,
-                                        JobEventPublisherPortOut events,
-                                        SingleFlightPortOut singleFlight,
-                                        CoalescingKeyPortOut coalescingKey,
-                                        JobSubmissionPolicyPortOut submissionPolicy) {
+    public JobTransitionService(JobRepositoryPortOut repository,
+                                JobResultStorePortOut resultStore,
+                                JobEventPublisherPortOut events,
+                                SingleFlightPortOut singleFlight,
+                                CoalescingKeyPortOut coalescingKey,
+                                JobSubmissionPolicyPortOut submissionPolicy,
+                                Clock clock) {
         this.repository = repository;
         this.resultStore = resultStore;
         this.events = events;
         this.singleFlight = singleFlight;
         this.coalescingKey = coalescingKey;
         this.submissionPolicy = submissionPolicy;
+        this.clock = clock;
     }
+
+    // --- não-terminais -----------------------------------------------------
+
+    /** PENDING → PROCESSING. @return {@code false} se o job já saiu de PENDING. */
+    public boolean start(Job job) {
+        if (!repository.start(job.getId())) {
+            return false;
+        }
+        publish(job.getId(), JobStatus.PROCESSING, null);
+        return true;
+    }
+
+    /** Atualiza o progresso enquanto PROCESSING (ignorado fora dele). */
+    public void progress(String jobId, int percent) {
+        if (repository.progress(jobId, percent)) {
+            publish(jobId, JobStatus.PROCESSING, percent);
+        }
+    }
+
+    // --- terminais ---------------------------------------------------------
 
     /** Materializa o resultado e conclui — o append precede a transição. */
     public void complete(Job job, Object result) {
@@ -61,7 +77,7 @@ public class JobTerminalTransitionService {
 
     public void complete(Job job) {
         if (repository.complete(job.getId())) {
-            events.publish(new JobEvent(job.getId(), JobStatus.COMPLETED, 100));
+            publish(job.getId(), JobStatus.COMPLETED, 100);
             release(job);
         }
     }
@@ -73,21 +89,21 @@ public class JobTerminalTransitionService {
 
     public void complete(String jobId) {
         if (repository.complete(jobId)) {
-            events.publish(new JobEvent(jobId, JobStatus.COMPLETED, 100));
+            publish(jobId, JobStatus.COMPLETED, 100);
             release(jobId);
         }
     }
 
     public void fail(Job job, String title, String detail) {
         if (repository.fail(job.getId(), title, detail)) {
-            events.publish(new JobEvent(job.getId(), JobStatus.FAILED, null));
+            publish(job.getId(), JobStatus.FAILED, null);
             release(job);
         }
     }
 
     public void fail(String jobId, String title, String detail) {
         if (repository.fail(jobId, title, detail)) {
-            events.publish(new JobEvent(jobId, JobStatus.FAILED, null));
+            publish(jobId, JobStatus.FAILED, null);
             release(jobId);
         }
     }
@@ -97,9 +113,15 @@ public class JobTerminalTransitionService {
         if (!repository.cancel(job.getId())) {
             return false;
         }
-        events.publish(new JobEvent(job.getId(), JobStatus.CANCELLED, null));
+        publish(job.getId(), JobStatus.CANCELLED, null);
         release(job);
         return true;
+    }
+
+    // --- helpers -----------------------------------------------------------
+
+    private void publish(String jobId, JobStatus status, Integer percent) {
+        events.publish(new JobEvent(jobId, status, percent, clock.instant()));
     }
 
     /** Normaliza o resultado: null → vazio, List → cópia, valor único → lista de 1. */

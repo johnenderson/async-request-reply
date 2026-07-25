@@ -4,7 +4,7 @@ import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.CancelResult;
 import com.async.request.reply.core.port.in.CancelJobPortIn;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
-import com.async.request.reply.core.service.JobTerminalTransitionService;
+import com.async.request.reply.core.service.JobTransitionService;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -16,12 +16,12 @@ import java.util.Optional;
 public class CancelJobUseCase implements CancelJobPortIn {
 
     private final JobRepositoryPortOut repository;
-    private final JobTerminalTransitionService terminal;
+    private final JobTransitionService transition;
 
     public CancelJobUseCase(JobRepositoryPortOut repository,
-                            JobTerminalTransitionService terminal) {
+                            JobTransitionService transition) {
         this.repository = repository;
-        this.terminal = terminal;
+        this.transition = transition;
     }
 
     @Override
@@ -31,6 +31,6 @@ public class CancelJobUseCase implements CancelJobPortIn {
             return CancelResult.NOT_FOUND;
         }
         // transição atômica; false = já terminal
-        return terminal.cancel(job.get()) ? CancelResult.CANCELLED : CancelResult.ALREADY_TERMINAL;
+        return transition.cancel(job.get()) ? CancelResult.CANCELLED : CancelResult.ALREADY_TERMINAL;
     }
 }

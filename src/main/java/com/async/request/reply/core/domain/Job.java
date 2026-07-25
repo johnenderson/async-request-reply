@@ -1,13 +1,13 @@
 package com.async.request.reply.core.domain;
 
 import com.async.request.reply.core.enums.JobStatus;
-import com.async.request.reply.core.exception.JobException;
 
 import java.time.Instant;
 
 /**
  * Agregado imutável de leitura. As transições de estado são atômicas e moram
- * no adapter de persistência (Valkey/Lua), que é a fonte de verdade do status.
+ * no adapter de persistência (Valkey/Redis via Redisson), que é a fonte de
+ * verdade do status.
  */
 public class Job {
 
@@ -16,15 +16,11 @@ public class Job {
     private final JobStatus status;
     private final Instant createdAt;
     private final Instant lastUpdatedAt;
-    private final JobException failure;
+    private final JobFailure failure;
     private final Integer percentComplete;
 
-    public Job(String id, String type) {
-        this(id, type, JobStatus.PENDING, Instant.now(), Instant.now(), null, null);
-    }
-
     private Job(String id, String type, JobStatus status, Instant createdAt,
-                Instant lastUpdatedAt, JobException failure, Integer percentComplete) {
+                Instant lastUpdatedAt, JobFailure failure, Integer percentComplete) {
         this.id = id;
         this.type = type;
         this.status = status;
@@ -34,10 +30,15 @@ public class Job {
         this.percentComplete = percentComplete;
     }
 
+    /** Job recém-criado (PENDING) com os timestamps informados pelo caller. */
+    public static Job pending(String id, String type, Instant now) {
+        return new Job(id, type, JobStatus.PENDING, now, now, null, null);
+    }
+
     /** Reconstrói um Job a partir de um estado persistido (ex: Valkey). */
     public static Job restore(String id, String type, JobStatus status,
                               Instant createdAt, Instant lastUpdatedAt,
-                              JobException failure, Integer percentComplete) {
+                              JobFailure failure, Integer percentComplete) {
         return new Job(id, type, status, createdAt, lastUpdatedAt, failure, percentComplete);
     }
 
@@ -46,6 +47,6 @@ public class Job {
     public JobStatus getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getLastUpdatedAt() { return lastUpdatedAt; }
-    public JobException getFailure() { return failure; }
+    public JobFailure getFailure() { return failure; }
     public Integer getPercentComplete() { return percentComplete; }
 }

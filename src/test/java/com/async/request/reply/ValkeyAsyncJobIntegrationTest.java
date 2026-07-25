@@ -5,6 +5,8 @@ import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobReporter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RedissonClient;
+import org.redisson.client.codec.StringCodec;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -44,6 +46,9 @@ class ValkeyAsyncJobIntegrationTest extends ValkeyContainerTestSupport {
 
     @Autowired
     CapturingAsyncRoutine routine;
+
+    @Autowired
+    RedissonClient redisson;
 
     MockMvc mvc;
 
@@ -89,6 +94,15 @@ class ValkeyAsyncJobIntegrationTest extends ValkeyContainerTestSupport {
                 .andExpect(jsonPath("$.size", is(2)))
                 .andExpect(jsonPath("$.totalElements", is(3)))
                 .andExpect(jsonPath("$.totalPages", is(2)));
+    }
+
+    @Test
+    void corruptJobHashYields404NotServerError() throws Exception {
+        // hash presente mas com status inválido (ex: escrita parcial/corrupção):
+        // findById deve degradar para "inexistente" (404), não estourar 500
+        redisson.getMap("job:corrupt-1", StringCodec.INSTANCE).put("status", "NOT_A_REAL_STATUS");
+
+        mvc.perform(get("/jobs/{id}/status", "corrupt-1")).andExpect(status().isNotFound());
     }
 
     private static String jobIdFrom(MvcResult result) throws Exception {

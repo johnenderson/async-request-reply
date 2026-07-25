@@ -12,8 +12,8 @@ import java.util.function.Consumer;
 /**
  * Implementação do {@link WatchJobPortIn}. A ordem é deliberada: assina o
  * tópico ANTES de ler o snapshot — assim uma transição que aconteça no meio
- * nunca se perde (no pior caso o listener recebe um duplicado inofensivo,
- * já que cada evento carrega o estado, não um delta).
+ * nunca se perde. Como cada evento carrega {@code lastUpdatedAt}, um snapshot
+ * que chegue atrasado atrás de um evento mais novo é descartável pelo cliente.
  *
  * <p>Não é anotado como componente: o bean só existe quando SSE está
  * habilitado (ver auto-configuration), para o contexto não exigir um
@@ -31,15 +31,11 @@ public class WatchJobUseCase implements WatchJobPortIn {
 
     @Override
     public JobWatchView execute(String id, Consumer<JobEvent> listener) {
-        if (repository.findById(id).isEmpty()) {
-            return new JobWatchView.NotFound();
-        }
-
         AutoCloseable subscription = subscriber.subscribe(id, listener);
 
         Optional<JobEvent> snapshot = repository.findById(id).map(JobEvent::of);
         if (snapshot.isEmpty()) {
-            closeQuietly(subscription); // expirou entre as leituras (TTL)
+            closeQuietly(subscription); // inexistente (ou expirado no meio) → nada a acompanhar
             return new JobWatchView.NotFound();
         }
 
