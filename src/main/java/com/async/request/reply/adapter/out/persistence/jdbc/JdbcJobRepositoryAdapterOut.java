@@ -27,6 +27,9 @@ import java.util.UUID;
  */
 public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
+    /** Usado quando um job está FAILED sem título gravado (dado legado/parcial). */
+    private static final String DEFAULT_FAILURE_TITLE = "Job failed";
+
     private static final String INSERT = """
             insert into async_jobs
                 (id, type, status, coalescing_key, idempotency_key, created_at, last_updated_at)
@@ -53,6 +56,52 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
                set status = 'COMPLETED', percent_complete = 100, last_updated_at = :now
              where id = :id and status in ('PENDING', 'PROCESSING')
             returning last_updated_at
+            """;
+
+    private static final String START = """
+            update async_jobs
+               set status = 'PROCESSING', last_updated_at = :now
+             where id = :id and status = 'PENDING'
+            returning last_updated_at
+            """;
+
+    private static final String FAIL = """
+            update async_jobs
+               set status = 'FAILED', error_title = :title, error_detail = :detail,
+                   last_updated_at = :now
+             where id = :id and status in ('PENDING', 'PROCESSING')
+            returning last_updated_at
+            """;
+
+    private static final String CANCEL = """
+            update async_jobs
+               set status = 'CANCELLED', last_updated_at = :now
+             where id = :id and status in ('PENDING', 'PROCESSING')
+            returning last_updated_at
+            """;
+
+    /** Progresso só faz sentido em execução: o evento publicado nunca mente sobre o status. */
+    private static final String PROGRESS = """
+            update async_jobs
+               set percent_complete = :percent, last_updated_at = :now
+             where id = :id and status = 'PROCESSING'
+            returning last_updated_at
+            """;
+
+    private static final String SELECT_STALE_ACTIVE = """
+            select id from async_jobs
+             where status in ('PENDING', 'PROCESSING') and last_updated_at < :olderThan
+             order by last_updated_at
+             limit :limit
+            """;
+
+    private static final String SELECT_FRESH_COMPLETED = """
+            select * from async_jobs
+             where coalescing_key = :coalescingKey
+               and status = 'COMPLETED'
+               and last_updated_at > :completedAfter
+             order by last_updated_at desc
+             limit 1
             """;
 
     private final JdbcClient jdbc;
@@ -129,39 +178,74 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
     }
 
     @Override
-    public Optional<Instant> complete(String id) {
-        Instant now = clock.instant();
-        return jdbc.sql(COMPLETE)
-                .param("id", UUID.fromString(id))
-                .param("now", at(now))
-                .query(OffsetDateTime.class)
-                .optional()
-                .map(OffsetDateTime::toInstant);
-    }
-
-    @Override
     public Optional<Instant> start(String id) {
-        throw new UnsupportedOperationException("nao implementado");
+        return transition(START, id);
     }
 
     @Override
-    public Optional<Instant> fail(String id, String title, String detail) {
-        throw new UnsupportedOperationException("nao implementado");
+    public Optional<Instant> complete(String id) {
+        return transition(COMPLETE, id);
     }
 
     @Override
     public Optional<Instant> cancel(String id) {
-        throw new UnsupportedOperationException("nao implementado");
+        return transition(CANCEL, id);
+    }
+
+    @Override
+    public Optional<Instant> fail(String id, String title, String detail) {
+        Instant now = clock.instant();
+        return appliedAt(jdbc.sql(FAIL)
+                .param("id", UUID.fromString(id))
+                .param("title", title)
+                .param("detail", detail)
+                .param("now", at(now)));
     }
 
     @Override
     public Optional<Instant> progress(String id, int percent) {
-        throw new UnsupportedOperationException("nao implementado");
+        Instant now = clock.instant();
+        return appliedAt(jdbc.sql(PROGRESS)
+                .param("id", UUID.fromString(id))
+                .param("percent", percent)
+                .param("now", at(now)));
     }
 
     @Override
     public List<String> findStaleActive(Instant olderThan, int limit) {
-        throw new UnsupportedOperationException("nao implementado");
+        return jdbc.sql(SELECT_STALE_ACTIVE)
+                .param("olderThan", at(olderThan))
+                .param("limit", limit)
+                .query(String.class)
+                .list();
+    }
+
+    @Override
+    public Optional<Job> findFreshCompleted(String coalescingKey, Instant completedAfter) {
+        if (coalescingKey == null) {
+            return Optional.empty();
+        }
+        return jdbc.sql(SELECT_FRESH_COMPLETED)
+                .param("coalescingKey", coalescingKey)
+                .param("completedAfter", at(completedAfter))
+                .query(JOB_MAPPER)
+                .optional();
+    }
+
+    /**
+     * Check-and-set em um único statement: o {@code WHERE} carrega os estados de
+     * origem permitidos, e o {@code RETURNING} devolve o instante gravado quando
+     * a transição valeu.
+     */
+    private Optional<Instant> transition(String sql, String id) {
+        Instant now = clock.instant();
+        return appliedAt(jdbc.sql(sql)
+                .param("id", UUID.fromString(id))
+                .param("now", at(now)));
+    }
+
+    private static Optional<Instant> appliedAt(JdbcClient.StatementSpec statement) {
+        return statement.query(OffsetDateTime.class).optional().map(OffsetDateTime::toInstant);
     }
 
     @Override
@@ -186,9 +270,20 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
         return value == null ? null : value.toInstant();
     }
 
+    /**
+     * Um job FAILED <b>sempre</b> tem falha: se o título gravado estiver
+     * ausente/em branco, sintetiza um padrão. Devolver {@code null} aqui faria o
+     * adapter web quebrar ao renderizar o Problem Detail.
+     */
     private static JobFailure failure(ResultSet rs) throws SQLException {
+        if (!JobStatus.FAILED.name().equals(rs.getString("status"))) {
+            return null;
+        }
         String title = rs.getString("error_title");
-        return (title == null || title.isBlank()) ? null : new JobFailure(title, rs.getString("error_detail"));
+        String detail = rs.getString("error_detail");
+        return new JobFailure(
+                (title == null || title.isBlank()) ? DEFAULT_FAILURE_TITLE : title,
+                (detail == null || detail.isBlank()) ? null : detail);
     }
 
     private static OffsetDateTime at(Instant instant) {

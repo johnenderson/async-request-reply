@@ -195,6 +195,17 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
         return List.copyOf(active.valueRange(0, true, olderThan.toEpochMilli(), true, 0, limit));
     }
 
+    /**
+     * Não suportado neste storage: responder isto exigiria varrer o keyspace,
+     * porque não há índice por escopo de conclusão. A janela de frescor é
+     * capacidade do storage relacional (ADR 0004); aqui devolver vazio significa
+     * "sem memória de dado quente", e toda submissão dispara carga.
+     */
+    @Override
+    public Optional<Job> findFreshCompleted(String coalescingKey, Instant completedAfter) {
+        return Optional.empty();
+    }
+
     @Override
     public void untrackActive(String id) {
         redisson.getScoredSortedSet(keys.activeIndex(), StringCodec.INSTANCE).remove(id);

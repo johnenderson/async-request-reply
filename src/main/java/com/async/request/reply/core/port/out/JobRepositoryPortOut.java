@@ -56,6 +56,16 @@ public interface JobRepositoryPortOut {
     List<String> findStaleActive(Instant olderThan, int limit);
 
     /**
+     * Último job <b>concluído</b> daquele escopo de coalescing cuja conclusão é
+     * posterior a {@code completedAfter} — base da janela de frescor: se existe,
+     * os dados seguem quentes e uma nova carga é desnecessária.
+     *
+     * <p>Só {@code COMPLETED} conta: uma carga que falhou não deve suprimir a
+     * próxima tentativa.</p>
+     */
+    Optional<Job> findFreshCompleted(String coalescingKey, Instant completedAfter);
+
+    /**
      * Remove um id do índice de ativos sem transicionar estado. Usado quando o
      * job indexado não existe mais (expirou pelo TTL): sem isso o índice
      * acumularia entradas órfãas para sempre.
