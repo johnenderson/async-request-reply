@@ -67,8 +67,14 @@ public class RedisJobRepositoryAdapterOut implements JobRepositoryPortOut {
         this.clock = clock;
     }
 
+    /**
+     * {@code coalescingKey} é ignorado neste adapter: no storage Redis o
+     * single-flight vive em {@code SingleFlightPortOut} (guard + lock), não em
+     * constraint. Ver ADR 0004 — no storage JDBC o coalescing passa a ser
+     * resolvido aqui.
+     */
     @Override
-    public Job create(String id, String type, String idempotencyKey) {
+    public Job create(String id, String type, String idempotencyKey, String coalescingKey) {
         if (idempotencyKey == null) {
             return writeHash(id, type);
         }

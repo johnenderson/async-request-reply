@@ -47,7 +47,7 @@ class SubmitJobUseCaseTest {
         when(policy.retryAfterSeconds()).thenReturn(5);
         when(processor.supports(TYPE)).thenReturn(true);
         // create devolve um job novo com o id pedido (caminho "fresh")
-        when(repository.create(anyString(), anyString(), any()))
+        when(repository.create(anyString(), anyString(), any(), any()))
                 .thenAnswer(call -> Job.pending(call.getArgument(0), call.getArgument(1), Instant.now()));
     }
 
@@ -85,7 +85,7 @@ class SubmitJobUseCaseTest {
         SubmittedJob submitted = useCase(true).execute(TYPE, null);
 
         assertThat(submitted.jobId()).isEqualTo(owner);
-        verify(repository, never()).create(anyString(), anyString(), any());
+        verify(repository, never()).create(anyString(), anyString(), any(), any());
         verify(processor, never()).process(any(Job.class));
     }
 
@@ -117,7 +117,7 @@ class SubmitJobUseCaseTest {
     @DisplayName("não redespacha quando o dedupe de idempotência vence a corrida")
     void execute_should_not_dispatch_when_repository_returns_a_deduplicated_job() {
         String otherId = UUID.randomUUID().toString();
-        when(repository.create(anyString(), anyString(), any()))
+        when(repository.create(anyString(), anyString(), any(), any()))
                 .thenReturn(Job.pending(otherId, TYPE, Instant.now()));
 
         SubmittedJob submitted = useCase(false).execute(TYPE, "k1");

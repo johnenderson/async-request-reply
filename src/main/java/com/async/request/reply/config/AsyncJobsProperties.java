@@ -3,6 +3,7 @@ package com.async.request.reply.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * Propriedades da biblioteca. Valores ausentes assumem defaults; valores
@@ -74,6 +75,14 @@ public record AsyncJobsProperties(
                         "async-jobs.sse.max-pending-events deve ser positivo, mas foi " + maxPendingEvents);
             }
         }
+    }
+
+    /**
+     * Janela de frescor: enquanto um job do mesmo escopo concluiu há menos que a
+     * janela, os dados seguem quentes e uma nova carga é desnecessária. Distinta
+     * do single-flight, que cobre job ainda em andamento.
+     */
+    public record Freshness(boolean enabled, Duration defaultWindow, Map<String, Duration> perType) {
     }
 
     /**

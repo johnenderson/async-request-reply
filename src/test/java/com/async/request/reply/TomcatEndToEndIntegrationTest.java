@@ -145,7 +145,7 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
     }
 
     @Test
-    void cancelOverRealHttpMakesStatusGone() throws Exception {
+    void cancelOverRealHttpMakesStatusReportCancelled() throws Exception {
         HttpResponse<String> submitted = post("/jobs/e2e-slow");
         String jobId = JsonPath.read(submitted.body(), "$.jobId");
 
@@ -153,7 +153,8 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
         assertThat(cancel.statusCode()).isEqualTo(202);
 
         HttpResponse<String> status = get(url("/jobs/" + jobId + "/status"));
-        assertThat(status.statusCode()).isEqualTo(410);
+        assertThat(status.statusCode()).isEqualTo(200);
+        assertThat(JsonPath.<String>read(status.body(), "$.status")).isEqualTo("CANCELLED");
     }
 
     @Test

@@ -95,7 +95,7 @@ public class SubmitJobUseCase implements SubmitJobPortIn {
 
     private Submission create(String type, String idempotencyKey, String singleFlightKey) {
         String id = UUID.randomUUID().toString();
-        Job job = repository.create(id, type, idempotencyKey);
+        Job job = repository.create(id, type, idempotencyKey, singleFlightKey);
         if (!job.getId().equals(id)) {
             // o dedupe de idempotência venceu a corrida: o job já existe e já foi
             // (ou será) despachado por quem o criou

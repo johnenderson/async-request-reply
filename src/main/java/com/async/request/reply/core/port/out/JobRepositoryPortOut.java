@@ -17,10 +17,16 @@ import java.util.Optional;
 public interface JobRepositoryPortOut {
 
     /**
-     * Cria um novo job com id pré-gerado. Se {@code idempotencyKey} já existir,
-     * retorna o job existente (sem criar outro) — dedupe atômico.
+     * Cria um novo job com id pré-gerado, ou devolve o existente quando há
+     * conflito — dedupe atômico em duas dimensões:
+     *
+     * <ul>
+     *   <li>{@code idempotencyKey} já usada → devolve o job daquela key;</li>
+     *   <li>{@code coalescingKey} com job ainda ativo → devolve o job ativo
+     *       (single-flight). {@code null} desliga o coalescing.</li>
+     * </ul>
      */
-    Job create(String id, String type, String idempotencyKey);
+    Job create(String id, String type, String idempotencyKey, String coalescingKey);
 
     Optional<Job> findById(String id);
 

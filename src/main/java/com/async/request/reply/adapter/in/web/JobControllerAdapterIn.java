@@ -102,7 +102,7 @@ public class JobControllerAdapterIn {
             case JobStatusView.InProgress v -> ResponseEntity.ok()
                     .header("Retry-After", String.valueOf(v.retryAfterSeconds()))
                     .header("Expires", httpDate(v.expiresAt()))
-                    .body(responseMapper.toStatusResponse(v));
+                    .body(responseMapper.toStatusResponse(v.body()));
 
             case JobStatusView.Completed(var expiresAt) -> ResponseEntity.status(HttpStatus.SEE_OTHER) // 303
                     .location(uris.result(id))
@@ -115,7 +115,10 @@ public class JobControllerAdapterIn {
                 yield ResponseEntity.status(problem.getStatus()).body(problem); // 422
             }
 
-            case JobStatusView.Cancelled _ -> ResponseEntity.status(HttpStatus.GONE).build(); // 410
+            // cancelado e terminal, mas o recurso de status continua legivel (200)
+            case JobStatusView.Cancelled v -> ResponseEntity.ok()
+                    .header("Expires", httpDate(v.expiresAt()))
+                    .body(responseMapper.toStatusResponse(v.body()));
             case JobStatusView.NotFound _ -> ResponseEntity.notFound().build();               // 404
         };
     }

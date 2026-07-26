@@ -20,8 +20,7 @@ public class JobResponseMapper {
         return new SubmittedJobResponse(submitted.jobId(), statusUri.toString());
     }
 
-    public JobStatusResponse toStatusResponse(JobStatusView.InProgress inProgress) {
-        JobStatusSnapshot status = inProgress.body();
+    public JobStatusResponse toStatusResponse(JobStatusSnapshot status) {
         return new JobStatusResponse(
                 status.jobId(),
                 status.status(),

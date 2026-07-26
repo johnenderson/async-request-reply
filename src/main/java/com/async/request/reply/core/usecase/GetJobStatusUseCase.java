@@ -37,7 +37,10 @@ public class GetJobStatusUseCase implements GetJobStatusPortIn {
             );
             case COMPLETED -> new JobStatusView.Completed(policy.expiresAt(job));
             case FAILED    -> new JobStatusView.Failed(job.getFailure());
-            case CANCELLED -> new JobStatusView.Cancelled();
+            case CANCELLED -> new JobStatusView.Cancelled(
+                    JobStatusSnapshot.from(job),
+                    policy.expiresAt(job)
+            );
         };
     }
 }

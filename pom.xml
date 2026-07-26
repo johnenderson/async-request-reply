@@ -28,6 +28,20 @@
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
+		<!-- Storage JDBC (Aurora PostgreSQL): ver ADR 0004.
+		     Apenas spring-jdbc, sem starter: uma biblioteca nao deve impor pool de
+		     conexao nem ativar DataSourceAutoConfiguration — o DataSource e o
+		     driver sao do projeto consumidor, que ja fala com o banco dele. -->
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-jdbc</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+
 		<dependency>
 			<groupId>org.redisson</groupId>
 			<artifactId>redisson-spring-boot-starter</artifactId>

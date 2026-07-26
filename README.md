@@ -91,8 +91,12 @@ Possiveis respostas:
 - `200 OK`: job pendente ou em processamento.
 - `303 See Other`: job concluido; o header `Location` aponta para `/jobs/{id}/result`.
 - `404 Not Found`: job inexistente.
-- `410 Gone`: job cancelado.
-- `422 Unprocessable Content`: job falhou.
+- `422 Unprocessable Content`: job falhou (Problem Details, RFC 9457).
+
+Job cancelado tambem responde `200 OK`, com `status: CANCELLED` no corpo: o
+padrao trata cancelado como um valor de status, e nao como recurso que deixou de
+existir — assim o cliente continua lendo `createdAt`, `lastUpdatedAt` e `Expires`
+sem tratamento especial, e `404` fica reservado para job inexistente.
 
 Exemplo de job em processamento:
 

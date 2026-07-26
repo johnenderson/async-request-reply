@@ -221,9 +221,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 .andExpect(jsonPath("$.totalPages", is(1)));
     }
 
-    // 6. DELETE /status — cancela → 410 Gone
+    // 6. DELETE /status — cancela → status segue legivel com estado terminal
     @Test
-    void cancelJobReturns202ThenStatusIsGone() throws Exception {
+    void cancelJobReturns202AndStatusReportsCancelled() throws Exception {
         MvcResult post = mvc.perform(post("/jobs/cancel-test"))
                 .andExpect(status().isAccepted()).andReturn();
 
@@ -231,7 +231,13 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
 
         mvc.perform(delete("/jobs/{id}/status", jobId)).andExpect(status().isAccepted());
 
-        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isGone());
+        // o padrao mantem o recurso de status legivel, refletindo o estado cancelado
+        mvc.perform(get("/jobs/{id}/status", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("CANCELLED")))
+                .andExpect(jsonPath("$.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.lastUpdatedAt").isNotEmpty())
+                .andExpect(header().exists("Expires"));
     }
 
     // 7. Job inexistente → 404
@@ -252,7 +258,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
         // worker atrasado tenta concluir — deve ser ignorado
         reporter.complete(jobId, List.of("tarde-demais"));
 
-        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isGone()); // segue CANCELLED
+        mvc.perform(get("/jobs/{id}/status", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("CANCELLED"))); // complete tardio nao sobrescreveu
     }
 
     // 10. (#5) Resultado nulo → /result 200 com content vazio (sem 500)
@@ -331,13 +339,15 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
 
     // 14. Cancelamento também pela rota canônica DELETE /jobs/{id}
     @Test
-    void cancelViaCanonicalRouteReturns202ThenGone() throws Exception {
+    void cancelViaCanonicalRouteReturns202AndStatusReportsCancelled() throws Exception {
         MvcResult post = mvc.perform(post("/jobs/cancel-test"))
                 .andExpect(status().isAccepted()).andReturn();
         String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
 
         mvc.perform(delete("/jobs/{id}", jobId)).andExpect(status().isAccepted());
-        mvc.perform(get("/jobs/{id}/status", jobId)).andExpect(status().isGone());
+        mvc.perform(get("/jobs/{id}/status", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("CANCELLED")));
     }
 
     // 8. Fire-and-forget: handler async + conclusão via JobReporter
