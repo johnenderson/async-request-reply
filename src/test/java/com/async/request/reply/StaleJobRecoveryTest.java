@@ -6,33 +6,35 @@ import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.service.StaleJobRecoveryService;
 import com.async.request.reply.spi.JobHandler;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.redisson.api.RedissonClient;
-import org.redisson.client.codec.StringCodec;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Recuperação de jobs órfãos: sem ela, um job cuja instância caiu antes de
- * processar ficaria PENDING até o TTL e o cliente faria polling eterno.
+ * processar ficaria PENDING para sempre e o cliente faria polling eterno.
  *
- * <p>Os jobs órfãos são escritos direto no Valkey (simulando o estado deixado
- * por uma instância que morreu) e a varredura é disparada manualmente, sem
- * esperar o intervalo do agendador.</p>
+ * <p>Os órfãos são escritos direto na tabela (simulando o estado deixado por uma
+ * instância que morreu) e a varredura é disparada manualmente, sem esperar o
+ * intervalo do agendador.</p>
  */
 @SpringBootTest(properties = "async-jobs.coalesce-in-flight=false")
-class StaleJobRecoveryTest extends ValkeyContainerTestSupport {
+@DisplayName("Recuperação de jobs órfãos")
+class StaleJobRecoveryTest extends PostgresContainerTestSupport {
+
+    private static final String TYPE = "reap-test";
 
     @Autowired
     StaleJobRecoveryService recovery;
@@ -40,23 +42,28 @@ class StaleJobRecoveryTest extends ValkeyContainerTestSupport {
     @Autowired
     JobRepositoryPortOut repository;
 
-    @Autowired
-    RedissonClient redisson;
+    private final JdbcClient jdbc = JdbcClient.create(dataSource());
+
+    @BeforeEach
+    void cleanTable() {
+        truncateJobs();
+    }
 
     @TestConfiguration
     static class Handlers {
         @Bean
-        JobHandler<List<String>> reapHandler() {
-            return new JobHandler<>() {
-                public String type() { return "reap-test"; }
-                public List<String> handle() { return List.of("recuperado"); }
+        JobHandler reapHandler() {
+            return new JobHandler() {
+                public String type() { return TYPE; }
+                public void handle() { }
             };
         }
     }
 
     @Test
+    @DisplayName("job PENDING órfão é reenfileirado e conclui")
     void orphanedPendingJobIsRedispatchedAndCompletes() {
-        String jobId = writeOrphan(JobStatus.PENDING, Instant.now().minus(Duration.ofHours(2)));
+        String jobId = writeOrphan(JobStatus.PENDING, TYPE, Instant.now().minus(Duration.ofHours(2)));
 
         assertThat(recovery.recover()).isPositive();
 
@@ -65,8 +72,9 @@ class StaleJobRecoveryTest extends ValkeyContainerTestSupport {
     }
 
     @Test
+    @DisplayName("job zumbi em PROCESSING é marcado como falho após o timeout")
     void zombieProcessingJobIsFailedAfterTimeout() {
-        String jobId = writeOrphan(JobStatus.PROCESSING, Instant.now().minus(Duration.ofHours(2)));
+        String jobId = writeOrphan(JobStatus.PROCESSING, TYPE, Instant.now().minus(Duration.ofHours(2)));
 
         assertThat(recovery.recover()).isPositive();
 
@@ -76,40 +84,44 @@ class StaleJobRecoveryTest extends ValkeyContainerTestSupport {
     }
 
     @Test
+    @DisplayName("job recente é deixado em paz")
     void recentJobsAreLeftAlone() {
-        String jobId = writeOrphan(JobStatus.PENDING, Instant.now());
+        String jobId = writeOrphan(JobStatus.PENDING, TYPE, Instant.now());
 
         recovery.recover();
 
         assertThat(status(jobId)).isEqualTo(JobStatus.PENDING);
     }
 
-    /** Id indexado cujo job já expirou deve sair do índice, não repetir para sempre. */
+    /**
+     * Duas aplicações no mesmo banco, ou um deployment heterogêneo: a varredura
+     * não pode reenfileirar (nem matar) job de type que esta instância não conhece.
+     */
     @Test
-    void indexedButExpiredJobIsPurgedFromIndex() {
-        String jobId = UUID.randomUUID().toString();
-        long oldScore = Instant.now().minus(Duration.ofHours(2)).toEpochMilli();
-        redisson.getScoredSortedSet("jobs:active", StringCodec.INSTANCE).add(oldScore, jobId);
+    @DisplayName("job de type não registrado nesta instância é deixado para quem o conhece")
+    void jobOfUnknownTypeIsLeftAlone() {
+        String jobId = writeOrphan(JobStatus.PROCESSING, "type-de-outra-app",
+                Instant.now().minus(Duration.ofHours(2)));
 
-        assertThat(recovery.recover()).isPositive();
+        recovery.recover();
 
-        assertThat(repository.findStaleActive(Instant.now(), 100)).doesNotContain(jobId);
+        assertThat(status(jobId)).isEqualTo(JobStatus.PROCESSING);
     }
 
     // --- helpers -------------------------------------------------------------
 
-    /** Escreve um job direto no storage, como o deixado por uma instância que caiu. */
-    private String writeOrphan(JobStatus status, Instant lastUpdatedAt) {
+    /** Escreve um job direto na tabela, como o deixado por uma instância que caiu. */
+    private String writeOrphan(JobStatus status, String type, Instant lastUpdatedAt) {
         String jobId = UUID.randomUUID().toString();
-        Map<String, String> hash = new LinkedHashMap<>();
-        hash.put("type", "reap-test");
-        hash.put("status", status.name());
-        hash.put("createdAt", lastUpdatedAt.toString());
-        hash.put("lastUpdatedAt", lastUpdatedAt.toString());
-
-        redisson.getMap("job:" + jobId, StringCodec.INSTANCE).putAll(hash);
-        redisson.getScoredSortedSet("jobs:active", StringCodec.INSTANCE)
-                .add(lastUpdatedAt.toEpochMilli(), jobId);
+        jdbc.sql("""
+                        insert into async_jobs (id, type, status, created_at, last_updated_at)
+                        values (:id, :type, :status, :at, :at)
+                        """)
+                .param("id", UUID.fromString(jobId))
+                .param("type", type)
+                .param("status", status.name())
+                .param("at", lastUpdatedAt.atOffset(ZoneOffset.UTC))
+                .update();
         return jobId;
     }
 

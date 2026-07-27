@@ -42,20 +42,6 @@
 			<scope>test</scope>
 		</dependency>
 
-		<dependency>
-			<groupId>org.redisson</groupId>
-			<artifactId>redisson-spring-boot-starter</artifactId>
-			<version>4.4.0</version>
-			<exclusions>
-				<!-- Redisson fornece a RedisConnectionFactory; remove o Lettuce
-				     para não haver duas connection factories no contexto -->
-				<exclusion>
-					<groupId>io.lettuce</groupId>
-					<artifactId>lettuce-core</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-
 		<!-- Gera spring-configuration-metadata.json: autocomplete das propriedades
 		     async-jobs.* na IDE do projeto consumidor -->
 		<dependency>

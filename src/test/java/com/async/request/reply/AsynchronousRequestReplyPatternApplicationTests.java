@@ -19,15 +19,14 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 
 import java.time.Duration;
-import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -36,7 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = "async-jobs.coalesce-in-flight=false")
-class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTestSupport {
+class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerTestSupport {
 
     @Autowired
     WebApplicationContext wac;
@@ -51,6 +50,7 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
 
     @BeforeEach
     void setup() {
+        truncateJobs();
         mvc = MockMvcBuilders.webAppContextSetup(wac).build();
         SLOW_GATE.set(new CountDownLatch(1));
     }
@@ -67,29 +67,28 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
     static class TestHandlers {
 
         @Bean
-        JobHandler<List<String>> fastHandler() {
-            return new JobHandler<>() {
+        JobHandler fastHandler() {
+            return new JobHandler() {
                 public String type() { return "test"; }
-                public List<String> handle() { return List.of("a", "b", "c"); }
+                public void handle() { }
             };
         }
 
         @Bean
-        JobHandler<List<String>> idempotentHandler() {
-            return new JobHandler<>() {
+        JobHandler idempotentHandler() {
+            return new JobHandler() {
                 public String type() { return "idempotent-test"; }
-                public List<String> handle() { return List.of("x"); }
+                public void handle() { }
             };
         }
 
         @Bean
-        JobHandler<List<String>> slowHandler() {
-            return new JobHandler<>() {
+        JobHandler slowHandler() {
+            return new JobHandler() {
                 public String type() { return "cancel-test"; }
-                public List<String> handle() {
+                public void handle() {
                     // bloqueia até o teste liberar — mantém o job ativo de forma determinística
                     TestGate.await(SLOW_GATE.get());
-                    return List.of("done");
                 }
             };
         }
@@ -106,34 +105,34 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
         }
 
         @Bean
-        JobHandler<List<String>> nullHandler() {
-            return new JobHandler<>() {
+        JobHandler nullHandler() {
+            return new JobHandler() {
                 public String type() { return "null-test"; }
-                public List<String> handle() { return null; }
+                public void handle() { }
             };
         }
 
         @Bean
-        JobHandler<List<String>> numericNameHandler() {
-            return new JobHandler<>() {
+        JobHandler numericNameHandler() {
+            return new JobHandler() {
                 public String type() { return "123"; }
-                public List<String> handle() { return List.of("numeric-name"); }
+                public void handle() { }
             };
         }
 
         @Bean
-        JobHandler<List<String>> dottedTypeHandler() {
-            return new JobHandler<>() {
+        JobHandler dottedTypeHandler() {
+            return new JobHandler() {
                 public String type() { return "report.v1_all-items"; }
-                public List<String> handle() { return List.of("ok"); }
+                public void handle() { }
             };
         }
 
         @Bean
-        JobHandler<List<String>> failingHandler() {
-            return new JobHandler<>() {
+        JobHandler failingHandler() {
+            return new JobHandler() {
                 public String type() { return "fail-test"; }
-                public List<String> handle() { throw new IllegalStateException("boom simulado"); }
+                public void handle() { throw new IllegalStateException("boom simulado"); }
             };
         }
     }
@@ -187,9 +186,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 .andExpect(jsonPath("$.lastUpdatedAt").isNotEmpty());
     }
 
-    // 4. Job concluído → 303 See Other para /result
+    // 4. Job concluído → status legivel com estado terminal (sem redirect)
     @Test
-    void completedJobRedirectsWith303ToResult() throws Exception {
+    void completedJobReportsCompletedOnStatus() throws Exception {
         MvcResult post = mvc.perform(post("/jobs/test"))
                 .andExpect(status().isAccepted()).andReturn();
 
@@ -199,26 +198,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
         awaitCompleted(jobId);
 
         mvc.perform(get(location))
-                .andExpect(status().isSeeOther())
-                .andExpect(header().string("Location", containsString("/jobs/" + jobId + "/result")));
-    }
-
-    // 5. GET /result — resultado paginado após conclusão
-    @Test
-    void resultEndpointReturnsPaginatedResult() throws Exception {
-        MvcResult post = mvc.perform(post("/jobs/test"))
-                .andExpect(status().isAccepted()).andReturn();
-
-        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
-
-        awaitCompleted(jobId);
-
-        mvc.perform(get("/jobs/{id}/result", jobId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content").isArray())
-                .andExpect(jsonPath("$.content", hasSize(3)))
-                .andExpect(jsonPath("$.totalElements", is(3)))
-                .andExpect(jsonPath("$.totalPages", is(1)));
+                .andExpect(jsonPath("$.status", is("COMPLETED")))
+                .andExpect(header().exists("Expires"));
     }
 
     // 6. DELETE /status — cancela → status segue legivel com estado terminal
@@ -240,10 +222,13 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
                 .andExpect(header().exists("Expires"));
     }
 
-    // 7. Job inexistente → 404
+    // 7. Job inexistente → 404, mesmo quando o id nem tem forma de id
     @Test
     void unknownJobReturns404() throws Exception {
-        mvc.perform(get("/jobs/non-existent-id/status")).andExpect(status().isNotFound());
+        mvc.perform(get("/jobs/{id}/status", UUID.randomUUID().toString()))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/jobs/non-existent-id/status"))
+                .andExpect(status().isNotFound());
     }
 
     // 9. (#3/#4) Cancelamento não pode ser sobrescrito por um complete tardio
@@ -256,26 +241,11 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
         mvc.perform(delete("/jobs/{id}/status", jobId)).andExpect(status().isAccepted());
 
         // worker atrasado tenta concluir — deve ser ignorado
-        reporter.complete(jobId, List.of("tarde-demais"));
+        reporter.complete(jobId);
 
         mvc.perform(get("/jobs/{id}/status", jobId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status", is("CANCELLED"))); // complete tardio nao sobrescreveu
-    }
-
-    // 10. (#5) Resultado nulo → /result 200 com content vazio (sem 500)
-    @Test
-    void nullResultYieldsEmptyPage() throws Exception {
-        MvcResult post = mvc.perform(post("/jobs/null-test"))
-                .andExpect(status().isAccepted()).andReturn();
-        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
-
-        awaitCompleted(jobId);
-
-        mvc.perform(get("/jobs/{id}/result", jobId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content").isArray())
-                .andExpect(jsonPath("$.totalElements", is(0)));
     }
 
     // 11. type numérico no path é apenas um nome de rotina válido
@@ -361,23 +331,21 @@ class AsynchronousRequestReplyPatternApplicationTests extends ValkeyContainerTes
         // aguarda o start() levar o job a PROCESSING (não completa sozinho)
         awaitStatusBody(jobId, "PROCESSING");
 
-        // worker do consumidor reporta a conclusão
-        reporter.complete(jobId, List.of("pago"));
+        // worker do consumidor reporta a conclusão; a lib nao serve o dado (ADR
+        // 0004): o status apenas passa a dizer que a base esta quente
+        assertTrue(reporter.complete(jobId), "o worker precisa saber que o report foi aceito");
 
-        // agora o status redireciona para o result
-        awaitCompleted(jobId);
-        mvc.perform(get("/jobs/{id}/result", jobId))
+        mvc.perform(get("/jobs/{id}/status", jobId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content", hasSize(1)));
+                .andExpect(jsonPath("$.status", is("COMPLETED")))
+                .andExpect(jsonPath("$.percentComplete", is(100)));
     }
 
     // --- helpers de espera (polling com timeout em vez de Thread.sleep) -----
 
-    /** Aguarda o job concluir (status redireciona 303 para o /result). */
+    /** Aguarda o job concluir (status passa a reportar COMPLETED). */
     private void awaitCompleted(String jobId) {
-        Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(100))
-                .until(() -> mvc.perform(get("/jobs/{id}/status", jobId))
-                        .andReturn().getResponse().getStatus() == 303);
+        awaitStatusBody(jobId, "COMPLETED");
     }
 
     /** Aguarda o status endpoint responder o código informado. */

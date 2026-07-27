@@ -18,9 +18,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.Matchers.is;
@@ -36,11 +34,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * sem depender de tempo real.
  */
 @SpringBootTest(properties = {
-        "async-jobs.result-ttl=PT10M",
+        "async-jobs.retention=PT10M",
         "async-jobs.coalesce-in-flight=false",
         "async-jobs.recovery.enabled=false"
 })
-class FixedClockJobTest extends ValkeyContainerTestSupport {
+class FixedClockJobTest extends PostgresContainerTestSupport {
 
     static final Instant FIXED = Instant.parse("2026-06-03T22:00:00Z");
 
@@ -53,6 +51,7 @@ class FixedClockJobTest extends ValkeyContainerTestSupport {
 
     @BeforeEach
     void setup() {
+        truncateJobs();
         mvc = MockMvcBuilders.webAppContextSetup(wac).build();
         GATE.set(new CountDownLatch(1));
     }
@@ -71,12 +70,11 @@ class FixedClockJobTest extends ValkeyContainerTestSupport {
         }
 
         @Bean
-        JobHandler<List<String>> clockHandler() {
-            return new JobHandler<>() {
+        JobHandler clockHandler() {
+            return new JobHandler() {
                 public String type() { return "clock-test"; }
-                public List<String> handle() {
+                public void handle() {
                     TestGate.await(GATE.get());
-                    return List.of("ok");
                 }
             };
         }

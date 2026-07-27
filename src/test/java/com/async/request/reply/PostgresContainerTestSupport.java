@@ -3,9 +3,8 @@ package com.async.request.reply;
 import org.junit.jupiter.api.Tag;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 
@@ -52,17 +51,17 @@ public abstract class PostgresContainerTestSupport {
         return "jdbc:postgresql://" + POSTGRES.getHost() + ":" + POSTGRES.getMappedPort(PORT) + "/" + DATABASE;
     }
 
-    /** DataSource para testes de contrato do adapter, sem contexto Spring. */
+    /**
+     * O container é único para toda a suíte (singleton): subir um Postgres por
+     * classe de teste multiplicaria o tempo sem aumentar o isolamento — cada
+     * teste limpa a tabela no {@code @BeforeEach}.
+     */
     public static DataSource dataSource() {
         return DATA_SOURCE;
     }
 
-    /** Usado pelos testes que sobem contexto (@SpringBootTest). */
-    @DynamicPropertySource
-    static void datasourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("async-jobs.storage", () -> "jdbc");
-        registry.add("spring.datasource.url", PostgresContainerTestSupport::jdbcUrl);
-        registry.add("spring.datasource.username", () -> USER);
-        registry.add("spring.datasource.password", () -> PASSWORD);
+    /** Limpa a tabela entre testes: o container é compartilhado pela suíte. */
+    public static void truncateJobs() {
+        JdbcClient.create(DATA_SOURCE).sql("delete from async_jobs").update();
     }
 }

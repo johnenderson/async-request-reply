@@ -12,21 +12,26 @@ import java.util.Map;
  *
  * <p>Mora em um pacote neutro ({@code config}) para os adapters não
  * dependerem do pacote {@code autoconfigure}.</p>
+ *
+ * @param retention por quanto tempo o registro de controle do job segue
+ *                  relevante. Alimenta o header {@code Expires} e o timeout do
+ *                  stream SSE; o expurgo em si é do consumidor, dono do esquema
+ *                  (ADR 0004).
  */
 @ConfigurationProperties(prefix = "async-jobs")
 public record AsyncJobsProperties(
-        Duration resultTtl,
+        Duration retention,
         Integer retryAfterSeconds,
         boolean coalesceInFlight,
-        String keyPrefix,
         Processing processing,
         Sse sse,
+        Freshness freshness,
         Recovery recovery
 ) {
 
     public AsyncJobsProperties {
-        resultTtl = (resultTtl == null) ? Duration.ofHours(1) : resultTtl;
-        requirePositive(resultTtl, "async-jobs.result-ttl", "PT1H");
+        retention = (retention == null) ? Duration.ofHours(1) : retention;
+        requirePositive(retention, "async-jobs.retention", "PT1H");
 
         retryAfterSeconds = (retryAfterSeconds == null) ? 5 : retryAfterSeconds;
         if (retryAfterSeconds <= 0) {
@@ -34,12 +39,39 @@ public record AsyncJobsProperties(
                     "async-jobs.retry-after-seconds deve ser positivo, mas foi " + retryAfterSeconds);
         }
 
-        // vazio = sem prefixo; usar quando mais de uma aplicação compartilha o banco
-        keyPrefix = (keyPrefix == null) ? "" : keyPrefix.trim();
-
         processing = (processing == null) ? new Processing(null) : processing;
-        sse = (sse == null) ? new Sse(null, null) : sse;
+        sse = (sse == null) ? new Sse(null, null, null) : sse;
+        freshness = (freshness == null) ? new Freshness(false, null, Map.of()) : freshness;
         recovery = (recovery == null) ? new Recovery(null, null, null, null) : recovery;
+
+        requireFreshnessWithinRetention(retention, freshness);
+    }
+
+    /**
+     * Janela de frescor maior que a retenção é contraditória: o job concluído
+     * seria expurgado antes de a janela fechar, e a lib refaria a carga achando
+     * que o dado esfriou — o oposto do que a configuração pediu. Melhor não subir
+     * do que descobrir isso como "carga que roda de novo sem motivo".
+     */
+    private static void requireFreshnessWithinRetention(Duration retention, Freshness freshness) {
+        if (!freshness.enabled()) {
+            return;
+        }
+        if (freshness.defaultWindow() != null) {
+            requireWithinRetention(retention, freshness.defaultWindow(),
+                    "async-jobs.freshness.default-window");
+        }
+        freshness.perType().forEach((type, window) -> requireWithinRetention(retention, window,
+                "async-jobs.freshness.per-type." + type));
+    }
+
+    private static void requireWithinRetention(Duration retention, Duration window, String property) {
+        if (window.compareTo(retention) > 0) {
+            throw new IllegalArgumentException(
+                    "async-jobs.retention (" + retention + ") deve ser maior ou igual a janela de frescor "
+                            + property + " (" + window + "): o job concluido seria expurgado antes de a "
+                            + "janela fechar.");
+        }
     }
 
     /**
@@ -61,9 +93,14 @@ public record AsyncJobsProperties(
     }
 
     /** Stream de eventos SSE ({@code GET /jobs/{id}/events}). */
-    public record Sse(Duration heartbeat, Integer maxPendingEvents) {
+    public record Sse(Duration heartbeat, Integer maxPendingEvents, Duration pollInterval) {
 
         public Sse {
+            // os eventos sao derivados do estado no banco: este e o intervalo entre
+            // leituras de um stream aberto, e portanto a latencia maxima do evento
+            pollInterval = (pollInterval == null) ? Duration.ofSeconds(1) : pollInterval;
+            requirePositive(pollInterval, "async-jobs.sse.poll-interval", "PT1S");
+
             heartbeat = (heartbeat == null) ? Duration.ofSeconds(15) : heartbeat;
             requirePositive(heartbeat, "async-jobs.sse.heartbeat", "PT15S");
 
@@ -83,6 +120,14 @@ public record AsyncJobsProperties(
      * do single-flight, que cobre job ainda em andamento.
      */
     public record Freshness(boolean enabled, Duration defaultWindow, Map<String, Duration> perType) {
+
+        public Freshness {
+            // sem o mapa, o binding de YAML sem 'per-type' deixaria null aqui
+            perType = (perType == null) ? Map.of() : perType;
+            if (defaultWindow != null) {
+                requirePositive(defaultWindow, "async-jobs.freshness.default-window", "PT1H");
+            }
+        }
     }
 
     /**

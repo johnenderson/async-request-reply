@@ -35,7 +35,6 @@ class StaleJobRecoveryServiceTest {
 
     private final JobRepositoryPortOut repository = mock(JobRepositoryPortOut.class);
     private final JobProcessorPortOut processor = mock(JobProcessorPortOut.class);
-    private final JobTransitionService transition = mock(JobTransitionService.class);
 
     private StaleJobRecoveryService recovery;
 
@@ -43,9 +42,10 @@ class StaleJobRecoveryServiceTest {
     void setUp() {
         // defaults: redispatch-after PT1M, processing-timeout PT15M, batch 100
         AsyncJobsProperties properties = new AsyncJobsProperties(null, null, false, null, null, null, null);
-        recovery = new StaleJobRecoveryService(repository, processor, transition, properties,
+        recovery = new StaleJobRecoveryService(repository, processor, properties,
                 Clock.fixed(NOW, ZoneOffset.UTC));
         when(processor.supports(TYPE)).thenReturn(true);
+        when(repository.fail(anyString(), anyString(), anyString())).thenReturn(Optional.of(NOW));
     }
 
     @ParameterizedTest(name = "{0} parado por {1}min → redespacha={2}, falha={3}")
@@ -63,8 +63,8 @@ class StaleJobRecoveryServiceTest {
         recovery.recover();
 
         verify(processor, redispatched ? org.mockito.Mockito.times(1) : never()).process(any(Job.class));
-        verify(transition, failed ? org.mockito.Mockito.times(1) : never())
-                .fail(any(Job.class), anyString(), anyString());
+        verify(repository, failed ? org.mockito.Mockito.times(1) : never())
+                .fail(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -78,28 +78,29 @@ class StaleJobRecoveryServiceTest {
 
         assertThat(acted).isZero();
         verify(processor, never()).process(any(Job.class));
-        verify(transition, never()).fail(any(Job.class), anyString(), anyString());
+        verify(repository, never()).fail(anyString(), anyString(), anyString());
+    }
+
+    /** O job pode terminar entre a varredura e a leitura — corrida benigna. */
+    @Test
+    @DisplayName("nao age sobre job que ficou terminal depois da varredura")
+    void recover_should_do_nothing_when_the_job_became_terminal_after_the_scan() {
+        indexed(Job.restore(JOB_ID, TYPE, JobStatus.COMPLETED,
+                NOW.minus(Duration.ofHours(2)), NOW.minus(Duration.ofHours(2)), null, 100));
+
+        assertThat(recovery.recover()).isZero();
+        verify(processor, never()).process(any(Job.class));
+        verify(repository, never()).fail(anyString(), anyString(), anyString());
     }
 
     @Test
-    @DisplayName("remove do índice um id cujo job já expirou")
-    void recover_should_untrack_when_job_no_longer_exists() {
+    @DisplayName("nao age sobre id que nao existe mais na tabela")
+    void recover_should_do_nothing_when_the_job_no_longer_exists() {
         when(repository.findStaleActive(any(Instant.class), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(JOB_ID));
         when(repository.findById(JOB_ID)).thenReturn(Optional.empty());
 
-        assertThat(recovery.recover()).isEqualTo(1);
-        verify(repository).untrackActive(JOB_ID);
-    }
-
-    @Test
-    @DisplayName("remove do índice um job que já está em estado terminal")
-    void recover_should_untrack_when_indexed_job_is_terminal() {
-        indexed(Job.restore(JOB_ID, TYPE, JobStatus.COMPLETED,
-                NOW.minus(Duration.ofHours(2)), NOW.minus(Duration.ofHours(2)), null, 100));
-
-        assertThat(recovery.recover()).isEqualTo(1);
-        verify(repository).untrackActive(JOB_ID);
+        assertThat(recovery.recover()).isZero();
     }
 
     // --- helpers -------------------------------------------------------------

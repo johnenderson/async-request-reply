@@ -20,9 +20,9 @@ import java.time.Clock;
  * esquema também é do consumidor, aplicado com a ferramenta de migração dele —
  * o DDL de referência está em {@code async-jobs-schema.sql}.</p>
  */
-@AutoConfiguration(after = AsyncJobsRedisAutoConfiguration.class)
+@AutoConfiguration
 @ConditionalOnClass(JdbcClient.class)
-@ConditionalOnProperty(name = "async-jobs.storage", havingValue = "jdbc")
+@ConditionalOnProperty(name = "async-jobs.storage", havingValue = "jdbc", matchIfMissing = true)
 public class AsyncJobsJdbcAutoConfiguration {
 
     /**

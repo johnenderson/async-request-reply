@@ -7,7 +7,6 @@ import com.async.request.reply.core.port.in.WatchJobPortIn;
 import com.async.request.reply.core.port.out.JobEventSubscriberPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.usecase.WatchJobUseCase;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -17,27 +16,19 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Auto-configuration do stream de eventos SSE ({@code GET /jobs/{id}/events}),
- * parte integrante do contrato da lib. Requer um {@link JobEventSubscriberPortOut}
- * no contexto — com {@code async-jobs.storage=redis} a lib registra o adapter
- * pub/sub; para storage próprio, o consumidor registra os beans dele. A ausência
- * falha o startup com mensagem explícita, em vez de omitir o endpoint em silêncio.
+ * parte integrante do contrato da lib — é ele que dispensa o polling do cliente
+ * (ADR 0002). O {@link JobEventSubscriberPortOut} vem do
+ * {@code AsyncJobsAutoConfiguration} — que deriva os eventos do próprio
+ * repositório, por polling — ou do consumidor, quando ele registra o dele.
  */
-@AutoConfiguration(after = {AsyncJobsRedisAutoConfiguration.class,
+@AutoConfiguration(after = {AsyncJobsJdbcAutoConfiguration.class,
         AsyncJobsAutoConfiguration.class,
         AsyncJobsWebAutoConfiguration.class})
 public class AsyncJobsSseAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    WatchJobPortIn watchJobPortIn(JobRepositoryPortOut repository,
-                                  ObjectProvider<JobEventSubscriberPortOut> subscriberProvider) {
-        JobEventSubscriberPortOut subscriber = subscriberProvider.getIfAvailable();
-        if (subscriber == null) {
-            throw new IllegalStateException(
-                    "O stream de eventos exige um JobEventSubscriberPortOut no contexto. "
-                            + "Com async-jobs.storage=redis a lib registra o adapter pub/sub; para storage "
-                            + "proprio, registre beans JobEventPublisherPortOut e JobEventSubscriberPortOut.");
-        }
+    WatchJobPortIn watchJobPortIn(JobRepositoryPortOut repository, JobEventSubscriberPortOut subscriber) {
         return new WatchJobUseCase(repository, subscriber);
     }
 
@@ -49,9 +40,8 @@ public class AsyncJobsSseAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         JobEventsControllerAdapterIn jobEventsControllerAdapterIn(WatchJobPortIn watchJob,
-                                                                  JobUriBuilder uris,
                                                                   AsyncJobsProperties properties) {
-            return new JobEventsControllerAdapterIn(watchJob, uris, properties);
+            return new JobEventsControllerAdapterIn(watchJob, properties);
         }
     }
 }

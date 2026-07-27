@@ -8,6 +8,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.time.Clock;
@@ -160,6 +161,29 @@ class JdbcJobRepositoryTransitionsTest extends PostgresContainerTestSupport {
         newJob();
 
         assertThat(repository.findFreshCompleted(TYPE, NOW.minus(Duration.ofHours(1)))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("id malformado é apenas um job inexistente, não um erro")
+    void findById_should_return_empty_when_id_is_not_a_uuid() {
+        // o id vem do path da request: qualquer string chega até aqui, e um
+        // IllegalArgumentException viraria 500 no lugar do 404 devido
+        assertThat(repository.findById("nao-e-uuid")).isEmpty();
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @DisplayName("transição sobre id malformado é recusada, sem estourar")
+    @ValueSource(strings = {"start", "complete", "cancel", "fail", "progress"})
+    void transitions_should_be_refused_when_id_is_not_a_uuid(String transition) {
+        Optional<Instant> at = switch (transition) {
+            case "start" -> repository.start("nao-e-uuid");
+            case "complete" -> repository.complete("nao-e-uuid");
+            case "cancel" -> repository.cancel("nao-e-uuid");
+            case "fail" -> repository.fail("nao-e-uuid", "t", "d");
+            default -> repository.progress("nao-e-uuid", 10);
+        };
+
+        assertThat(at).isEmpty();
     }
 
     // --- helpers -------------------------------------------------------------

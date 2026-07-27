@@ -1,4 +1,3 @@
-com.async.request.reply.autoconfigure.AsyncJobsRedisAutoConfiguration
 com.async.request.reply.autoconfigure.AsyncJobsJdbcAutoConfiguration
 com.async.request.reply.autoconfigure.AsyncJobsAutoConfiguration
 com.async.request.reply.autoconfigure.AsyncJobsWebAutoConfiguration

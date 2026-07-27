@@ -15,12 +15,12 @@ import java.time.Instant;
  */
 public class DefaultJobPolicyAdapterOut implements JobPolicyPortOut {
 
-    /** Mesma retenção do storage (async-jobs.result-ttl). */
+    /** Mesma retenção do storage (async-jobs.retention). */
     private final Duration retention;
     private final int retryAfterSeconds;
 
     public DefaultJobPolicyAdapterOut(AsyncJobsProperties properties) {
-        this.retention = properties.resultTtl();
+        this.retention = properties.retention();
         this.retryAfterSeconds = properties.retryAfterSeconds();
     }
 

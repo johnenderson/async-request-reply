@@ -16,8 +16,8 @@ import java.util.Optional;
 /**
  * Recupera jobs órfãos. O dispatch do processamento é in-process, então um job
  * cuja instância caiu (ou cujo dispatch foi recusado por saturação) ficaria
- * {@code PENDING} até o TTL, com o cliente fazendo polling eterno. Este serviço
- * varre o índice de ativos e:
+ * {@code PENDING} para sempre, com o cliente fazendo polling eterno. Este
+ * serviço varre os jobs ativos parados e:
  *
  * <ul>
  *   <li>{@code PENDING} parado há mais de {@code redispatch-after} → reenfileira
@@ -25,8 +25,7 @@ import java.util.Optional;
  *       reenfileirando não processam em duplicidade);</li>
  *   <li>{@code PROCESSING} sem atualização há mais de {@code processing-timeout}
  *       → marca como falho (worker morreu sem reportar). Rotinas legitimamente
- *       longas devem reportar progresso para renovar o prazo;</li>
- *   <li>id indexado cujo job não existe mais (TTL) → remove do índice.</li>
+ *       longas devem reportar progresso para renovar o prazo.</li>
  * </ul>
  */
 public class StaleJobRecoveryService {
@@ -35,7 +34,6 @@ public class StaleJobRecoveryService {
 
     private final JobRepositoryPortOut repository;
     private final JobProcessorPortOut processor;
-    private final JobTransitionService transition;
     private final Clock clock;
     private final Duration redispatchAfter;
     private final Duration processingTimeout;
@@ -43,12 +41,10 @@ public class StaleJobRecoveryService {
 
     public StaleJobRecoveryService(JobRepositoryPortOut repository,
                                    JobProcessorPortOut processor,
-                                   JobTransitionService transition,
                                    AsyncJobsProperties properties,
                                    Clock clock) {
         this.repository = repository;
         this.processor = processor;
-        this.transition = transition;
         this.clock = clock;
         this.redispatchAfter = properties.recovery().redispatchAfter();
         this.processingTimeout = properties.recovery().processingTimeout();
@@ -66,13 +62,7 @@ public class StaleJobRecoveryService {
         int acted = 0;
         for (String id : candidates) {
             Optional<Job> found = repository.findById(id);
-            if (found.isEmpty()) {
-                repository.untrackActive(id);
-                log.debug("Job '{}' expirou mas seguia indexado; removido do indice de ativos", id);
-                acted++;
-                continue;
-            }
-            if (recover(found.get(), now)) {
+            if (found.isPresent() && recover(found.get(), now)) {
                 acted++;
             }
         }
@@ -84,11 +74,8 @@ public class StaleJobRecoveryService {
         return switch (job.getStatus()) {
             case PENDING -> redispatchIfStale(job, idle);
             case PROCESSING -> failIfZombie(job, idle);
-            case COMPLETED, FAILED, CANCELLED -> {
-                repository.untrackActive(job.getId());
-                log.debug("Job terminal '{}' seguia indexado; removido do indice de ativos", job.getId());
-                yield true;
-            }
+            // o job terminou entre a varredura e a leitura: nada a recuperar
+            case COMPLETED, FAILED, CANCELLED -> false;
         };
     }
 
@@ -108,8 +95,9 @@ public class StaleJobRecoveryService {
         }
         log.warn("Job '{}' (type '{}') em PROCESSING sem atualizacao por {}; marcando como falho",
                 job.getId(), job.getType(), idle);
-        return transition.fail(job, "Processing timeout",
-                "Nenhuma atualizacao por " + idle + "; o worker provavelmente morreu sem reportar.");
+        return repository.fail(job.getId(), "Processing timeout",
+                "Nenhuma atualizacao por " + idle + "; o worker provavelmente morreu sem reportar.")
+                .isPresent();
     }
 
     /**

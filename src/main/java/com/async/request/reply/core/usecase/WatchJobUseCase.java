@@ -6,18 +6,16 @@ import com.async.request.reply.core.port.out.JobEventSubscriberPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.result.JobWatchView;
 
-import java.util.Optional;
 import java.util.function.Consumer;
 
 /**
- * Implementação do {@link WatchJobPortIn}. A ordem é deliberada: assina o
- * tópico ANTES de ler o snapshot — assim uma transição que aconteça no meio
- * nunca se perde. Como cada evento carrega {@code lastUpdatedAt}, um snapshot
- * que chegue atrasado atrás de um evento mais novo é descartável pelo cliente.
+ * Implementação do {@link WatchJobPortIn}.
  *
- * <p>Não é anotado como componente: o bean só existe quando SSE está
- * habilitado (ver auto-configuration), para o contexto não exigir um
- * {@link JobEventSubscriberPortOut} que talvez não exista.</p>
+ * <p>Confirma que o job existe (para responder 404 antes de abrir stream) e
+ * assina os eventos. Não envia snapshot: os eventos são derivados do estado, e a
+ * primeira leitura do subscriber já entrega o estado corrente — inclusive o
+ * evento terminal, se o job tiver terminado antes da conexão. É isso que mantém
+ * a garantia de reconexão sem conclusão perdida.</p>
  */
 public class WatchJobUseCase implements WatchJobPortIn {
 
@@ -31,23 +29,9 @@ public class WatchJobUseCase implements WatchJobPortIn {
 
     @Override
     public JobWatchView execute(String id, Consumer<JobEvent> listener) {
-        AutoCloseable subscription = subscriber.subscribe(id, listener);
-
-        Optional<JobEvent> snapshot = repository.findById(id).map(JobEvent::of);
-        if (snapshot.isEmpty()) {
-            closeQuietly(subscription); // inexistente (ou expirado no meio) → nada a acompanhar
+        if (repository.findById(id).isEmpty()) {
             return new JobWatchView.NotFound();
         }
-
-        listener.accept(snapshot.get());
-        return new JobWatchView.Watching(subscription);
-    }
-
-    private static void closeQuietly(AutoCloseable subscription) {
-        try {
-            subscription.close();
-        } catch (Exception _) {
-            // cancelamento de assinatura é best-effort
-        }
+        return new JobWatchView.Watching(subscriber.subscribe(id, listener));
     }
 }

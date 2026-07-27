@@ -33,10 +33,17 @@ class AsyncJobsJdbcAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("registra o repositorio JDBC por omissao — jdbc e o storage default")
+    void should_register_jdbc_repository_by_default() {
+        contextRunner.run(context -> assertThat(context)
+                .hasSingleBean(JdbcJobRepositoryAdapterOut.class));
+    }
+
+    @Test
     @DisplayName("recua quando o storage nao e jdbc")
     void should_back_off_when_storage_is_not_jdbc() {
         contextRunner
-                .withPropertyValues("async-jobs.storage=redis")
+                .withPropertyValues("async-jobs.storage=custom")
                 .run(context -> assertThat(context).doesNotHaveBean(JdbcJobRepositoryAdapterOut.class));
     }
 

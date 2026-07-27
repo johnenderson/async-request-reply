@@ -160,10 +160,27 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
     @Override
     public Optional<Job> findById(String id) {
-        return jdbc.sql(SELECT_BY_ID)
-                .param("id", UUID.fromString(id))
+        return uuid(id).flatMap(key -> jdbc.sql(SELECT_BY_ID)
+                .param("id", key)
                 .query(JOB_MAPPER)
-                .optional();
+                .optional());
+    }
+
+    /**
+     * O id chega do path da request, então pode ser qualquer string. Um id que
+     * não é UUID simplesmente não existe na tabela — devolver vazio faz o web
+     * responder {@code 404}, no lugar de um {@code 500} por
+     * {@code IllegalArgumentException}.
+     */
+    private static Optional<UUID> uuid(String id) {
+        if (id == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(UUID.fromString(id));
+        } catch (IllegalArgumentException _) {
+            return Optional.empty();
+        }
     }
 
     @Override
@@ -194,21 +211,19 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
 
     @Override
     public Optional<Instant> fail(String id, String title, String detail) {
-        Instant now = clock.instant();
-        return appliedAt(jdbc.sql(FAIL)
-                .param("id", UUID.fromString(id))
+        return uuid(id).flatMap(key -> appliedAt(jdbc.sql(FAIL)
+                .param("id", key)
                 .param("title", title)
                 .param("detail", detail)
-                .param("now", at(now)));
+                .param("now", at(clock.instant()))));
     }
 
     @Override
     public Optional<Instant> progress(String id, int percent) {
-        Instant now = clock.instant();
-        return appliedAt(jdbc.sql(PROGRESS)
-                .param("id", UUID.fromString(id))
+        return uuid(id).flatMap(key -> appliedAt(jdbc.sql(PROGRESS)
+                .param("id", key)
                 .param("percent", percent)
-                .param("now", at(now)));
+                .param("now", at(clock.instant()))));
     }
 
     @Override
@@ -238,20 +253,13 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
      * a transição valeu.
      */
     private Optional<Instant> transition(String sql, String id) {
-        Instant now = clock.instant();
-        return appliedAt(jdbc.sql(sql)
-                .param("id", UUID.fromString(id))
-                .param("now", at(now)));
+        return uuid(id).flatMap(key -> appliedAt(jdbc.sql(sql)
+                .param("id", key)
+                .param("now", at(clock.instant()))));
     }
 
     private static Optional<Instant> appliedAt(JdbcClient.StatementSpec statement) {
         return statement.query(OffsetDateTime.class).optional().map(OffsetDateTime::toInstant);
-    }
-
-    @Override
-    public void untrackActive(String id) {
-        // Não há índice separado no storage relacional: "ativo" é um predicado na
-        // própria tabela, então não existe entrada órfã a remover.
     }
 
     // --- mapeamento ---------------------------------------------------------

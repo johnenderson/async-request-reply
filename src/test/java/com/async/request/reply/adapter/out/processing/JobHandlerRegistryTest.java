@@ -55,16 +55,15 @@ class JobHandlerRegistryTest {
         assertThat(registry.find("relatorio")).containsSame(routine);
     }
 
-    private static JobHandler<String> handler(String type) {
-        return new JobHandler<>() {
+    private static JobHandler handler(String type) {
+        return new JobHandler() {
             @Override
             public String type() {
                 return type;
             }
 
             @Override
-            public String handle() {
-                return "ok";
+            public void handle() {
             }
         };
     }

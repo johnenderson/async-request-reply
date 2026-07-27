@@ -64,11 +64,4 @@ public interface JobRepositoryPortOut {
      * próxima tentativa.</p>
      */
     Optional<Job> findFreshCompleted(String coalescingKey, Instant completedAfter);
-
-    /**
-     * Remove um id do índice de ativos sem transicionar estado. Usado quando o
-     * job indexado não existe mais (expirou pelo TTL): sem isso o índice
-     * acumularia entradas órfãas para sempre.
-     */
-    void untrackActive(String id);
 }

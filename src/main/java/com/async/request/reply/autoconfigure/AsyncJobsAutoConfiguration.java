@@ -1,6 +1,8 @@
 package com.async.request.reply.autoconfigure;
 
 import com.async.request.reply.adapter.out.coalescing.TypeCoalescingKeyAdapterOut;
+import com.async.request.reply.adapter.out.events.PollingJobEventSubscriberAdapterOut;
+import com.async.request.reply.adapter.out.policy.DefaultJobFreshnessPolicyAdapterOut;
 import com.async.request.reply.adapter.out.policy.DefaultJobPolicyAdapterOut;
 import com.async.request.reply.adapter.out.policy.DefaultJobSubmissionPolicyAdapterOut;
 import com.async.request.reply.adapter.out.processing.AsyncJobProcessorAdapterOut;
@@ -8,21 +10,17 @@ import com.async.request.reply.adapter.out.processing.JobHandlerRegistry;
 import com.async.request.reply.adapter.out.recovery.ScheduledStaleJobReaperAdapterOut;
 import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.port.in.CancelJobPortIn;
-import com.async.request.reply.core.port.in.GetJobResultPortIn;
 import com.async.request.reply.core.port.in.GetJobStatusPortIn;
 import com.async.request.reply.core.port.in.SubmitJobPortIn;
 import com.async.request.reply.core.port.out.CoalescingKeyPortOut;
-import com.async.request.reply.core.port.out.JobEventPublisherPortOut;
+import com.async.request.reply.core.port.out.JobEventSubscriberPortOut;
+import com.async.request.reply.core.port.out.JobFreshnessPolicyPortOut;
 import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
-import com.async.request.reply.core.port.out.JobResultStorePortOut;
 import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
-import com.async.request.reply.core.port.out.SingleFlightPortOut;
-import com.async.request.reply.core.service.JobTransitionService;
 import com.async.request.reply.core.service.StaleJobRecoveryService;
 import com.async.request.reply.core.usecase.CancelJobUseCase;
-import com.async.request.reply.core.usecase.GetJobResultUseCase;
 import com.async.request.reply.core.usecase.GetJobStatusUseCase;
 import com.async.request.reply.core.usecase.JobReporterUseCase;
 import com.async.request.reply.core.usecase.SubmitJobUseCase;
@@ -49,7 +47,7 @@ import java.util.List;
  * auditável aqui, e o core permanece independente de framework (conforme a skill
  * {@code hexagonal-architecture}).</p>
  */
-@AutoConfiguration(after = AsyncJobsRedisAutoConfiguration.class)
+@AutoConfiguration(after = AsyncJobsJdbcAutoConfiguration.class)
 @EnableAsync
 @EnableConfigurationProperties(AsyncJobsProperties.class)
 public class AsyncJobsAutoConfiguration {
@@ -69,16 +67,35 @@ public class AsyncJobsAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    JobFreshnessPolicyPortOut jobFreshnessPolicyPortOut(AsyncJobsProperties properties) {
+        return new DefaultJobFreshnessPolicyAdapterOut(properties.freshness());
+    }
+
+    @Bean
     @ConditionalOnMissingBean(CoalescingKeyPortOut.class)
     CoalescingKeyPortOut typeCoalescingKeyPortOut() {
         return new TypeCoalescingKeyAdapterOut();
     }
 
-    /** Fonte de tempo injetável — permite testar TTL/expiração de forma determinística. */
+    /** Fonte de tempo injetável — permite testar frescor/expiração de forma determinística. */
     @Bean
     @ConditionalOnMissingBean
     Clock asyncJobsClock() {
         return Clock.systemUTC();
+    }
+
+    // --- eventos ------------------------------------------------------------
+
+    /**
+     * Eventos derivados do estado, por polling: sem Redis não há pub/sub, e o
+     * banco é a única fonte de verdade (ADR 0004).
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    JobEventSubscriberPortOut jobEventSubscriberPortOut(JobRepositoryPortOut repository,
+                                                        AsyncJobsProperties properties) {
+        return new PollingJobEventSubscriberAdapterOut(repository, properties);
     }
 
     // --- processamento ------------------------------------------------------
@@ -91,9 +108,8 @@ public class AsyncJobsAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    JobProcessorPortOut jobProcessorPortOut(JobHandlerRegistry registry,
-                                            JobTransitionService transition) {
-        return new AsyncJobProcessorAdapterOut(registry, transition);
+    JobProcessorPortOut jobProcessorPortOut(JobHandlerRegistry registry, JobRepositoryPortOut repository) {
+        return new AsyncJobProcessorAdapterOut(registry, repository);
     }
 
     /**
@@ -113,19 +129,7 @@ public class AsyncJobsAutoConfiguration {
         return executor;
     }
 
-    // --- core: serviços e use cases ----------------------------------------
-
-    @Bean
-    @ConditionalOnMissingBean
-    JobTransitionService jobTransitionService(JobRepositoryPortOut repository,
-                                             JobResultStorePortOut resultStore,
-                                             JobEventPublisherPortOut events,
-                                             SingleFlightPortOut singleFlight,
-                                             CoalescingKeyPortOut coalescingKey,
-                                             JobSubmissionPolicyPortOut submissionPolicy) {
-        return new JobTransitionService(repository, resultStore, events, singleFlight,
-                coalescingKey, submissionPolicy);
-    }
+    // --- core: use cases ----------------------------------------------------
 
     @Bean
     @ConditionalOnMissingBean
@@ -133,10 +137,11 @@ public class AsyncJobsAutoConfiguration {
                                     JobProcessorPortOut processor,
                                     JobPolicyPortOut policy,
                                     JobSubmissionPolicyPortOut submissionPolicy,
-                                    SingleFlightPortOut singleFlight,
-                                    CoalescingKeyPortOut coalescingKey) {
+                                    JobFreshnessPolicyPortOut freshnessPolicy,
+                                    CoalescingKeyPortOut coalescingKey,
+                                    Clock clock) {
         return new SubmitJobUseCase(repository, processor, policy, submissionPolicy,
-                singleFlight, coalescingKey);
+                freshnessPolicy, coalescingKey, clock);
     }
 
     @Bean
@@ -147,24 +152,15 @@ public class AsyncJobsAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    GetJobResultPortIn getJobResultPortIn(JobRepositoryPortOut repository,
-                                          JobResultStorePortOut resultStore) {
-        return new GetJobResultUseCase(repository, resultStore);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    CancelJobPortIn cancelJobPortIn(JobRepositoryPortOut repository, JobTransitionService transition) {
-        return new CancelJobUseCase(repository, transition);
+    CancelJobPortIn cancelJobPortIn(JobRepositoryPortOut repository) {
+        return new CancelJobUseCase(repository);
     }
 
     /** SPI injetada pelo projeto consumidor para reportar andamento e conclusão. */
     @Bean
     @ConditionalOnMissingBean
-    JobReporter jobReporter(JobRepositoryPortOut repository,
-                            JobResultStorePortOut resultStore,
-                            JobTransitionService transition) {
-        return new JobReporterUseCase(repository, resultStore, transition);
+    JobReporter jobReporter(JobRepositoryPortOut repository) {
+        return new JobReporterUseCase(repository);
     }
 
     // --- recuperação de jobs órfãos ----------------------------------------
@@ -174,10 +170,9 @@ public class AsyncJobsAutoConfiguration {
     @ConditionalOnProperty(name = "async-jobs.recovery.enabled", havingValue = "true", matchIfMissing = true)
     StaleJobRecoveryService staleJobRecoveryService(JobRepositoryPortOut repository,
                                                     JobProcessorPortOut processor,
-                                                    JobTransitionService transition,
                                                     AsyncJobsProperties properties,
                                                     Clock clock) {
-        return new StaleJobRecoveryService(repository, processor, transition, properties, clock);
+        return new StaleJobRecoveryService(repository, processor, properties, clock);
     }
 
     @Bean

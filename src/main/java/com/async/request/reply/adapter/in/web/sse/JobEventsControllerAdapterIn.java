@@ -2,7 +2,6 @@ package com.async.request.reply.adapter.in.web.sse;
 
 import com.async.request.reply.adapter.in.web.dto.JobEventCompleteResponse;
 import com.async.request.reply.adapter.in.web.dto.JobEventStatusResponse;
-import com.async.request.reply.adapter.in.web.uribuilder.JobUriBuilder;
 import com.async.request.reply.config.AsyncJobsProperties;
 import com.async.request.reply.core.event.JobEvent;
 import com.async.request.reply.core.port.in.WatchJobPortIn;
@@ -42,8 +41,9 @@ import java.util.concurrent.TimeUnit;
  * estourar esse backlog a sessão é encerrada, em vez de acumular memória ou
  * atrasar outros streams.</p>
  *
- * <p>A {@code resultUrl} é resolvida na thread da request — os listeners rodam
- * em threads de pub/sub, sem request context para o {@link JobUriBuilder}.</p>
+ * <p>O evento {@code complete} diz apenas "terminou, neste instante": a lib não
+ * serve dados (ADR 0004), então o cliente lê o endpoint de domínio dele ao
+ * receber o evento.</p>
  */
 @RestController
 @RequestMapping("/jobs")
@@ -52,18 +52,15 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(JobEventsControllerAdapterIn.class);
 
     private final WatchJobPortIn watchJob;
-    private final JobUriBuilder uris;
     private final long timeoutMillis;
     private final Duration heartbeatInterval;
     private final int maxPendingEvents;
     private final ScheduledExecutorService heartbeatScheduler;
     private final ExecutorService sendExecutor;
 
-    public JobEventsControllerAdapterIn(WatchJobPortIn watchJob, JobUriBuilder uris,
-                                        AsyncJobsProperties properties) {
+    public JobEventsControllerAdapterIn(WatchJobPortIn watchJob, AsyncJobsProperties properties) {
         this.watchJob = watchJob;
-        this.uris = uris;
-        this.timeoutMillis = properties.resultTtl().toMillis();
+        this.timeoutMillis = properties.retention().toMillis();
         this.heartbeatInterval = properties.sse().heartbeat();
         this.maxPendingEvents = properties.sse().maxPendingEvents();
         this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -77,7 +74,7 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
     @GetMapping(path = "/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> events(@PathVariable String id) {
         SseEmitter emitter = new SseEmitter(timeoutMillis);
-        SseSession session = new SseSession(id, emitter, uris.result(id).toString(),
+        SseSession session = new SseSession(id, emitter,
                 new SerialExecutor(sendExecutor, maxPendingEvents));
 
         return switch (watchJob.execute(id, session::deliver)) {
@@ -164,16 +161,14 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
 
         private final String jobId;
         private final SseEmitter emitter;
-        private final String resultUrl;
         private final SerialExecutor serial;
         private volatile boolean closed;
         private AutoCloseable subscription;
         private ScheduledFuture<?> heartbeat;
 
-        private SseSession(String jobId, SseEmitter emitter, String resultUrl, SerialExecutor serial) {
+        private SseSession(String jobId, SseEmitter emitter, SerialExecutor serial) {
             this.jobId = jobId;
             this.emitter = emitter;
-            this.resultUrl = resultUrl;
             this.serial = serial;
         }
 
@@ -260,7 +255,7 @@ public class JobEventsControllerAdapterIn implements DisposableBean {
                 case PENDING -> statusEvent("status", event);
                 case PROCESSING -> statusEvent(event.percentComplete() == null ? "status" : "progress", event);
                 case COMPLETED -> SseEmitter.event().name("complete")
-                        .data(new JobEventCompleteResponse(event.jobId(), resultUrl, event.lastUpdatedAt()),
+                        .data(new JobEventCompleteResponse(event.jobId(), event.lastUpdatedAt()),
                                 MediaType.APPLICATION_JSON);
                 case FAILED -> statusEvent("failed", event);
                 case CANCELLED -> statusEvent("cancelled", event);

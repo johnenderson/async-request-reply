@@ -3,8 +3,8 @@
     {
       "name": "async-jobs.storage",
       "type": "java.lang.String",
-      "defaultValue": "redis",
-      "description": "Seleciona a auto-configuracao de storage. Com 'redis', a lib registra os adapters Valkey/Redis via Redisson; com outro valor, o consumidor deve registrar os ports."
+      "defaultValue": "jdbc",
+      "description": "Seleciona a auto-configuracao de storage. Com 'jdbc' (padrao), a lib registra o repositorio sobre o DataSource da aplicacao (Aurora PostgreSQL, ADR 0004); com outro valor, o consumidor registra o JobRepositoryPortOut dele."
     },
     {
       "name": "async-jobs.web.enabled",
@@ -16,7 +16,7 @@
       "name": "async-jobs.recovery.enabled",
       "type": "java.lang.Boolean",
       "defaultValue": true,
-      "description": "Liga a varredura de jobs orfaos. Avaliado como condicao de criacao dos beans; desligar significa que um job cuja instancia cair fica PENDING ate o TTL."
+      "description": "Liga a varredura de jobs orfaos. Avaliado como condicao de criacao dos beans; desligar significa que um job cuja instancia cair fica PENDING para sempre."
     }
   ]
 }
