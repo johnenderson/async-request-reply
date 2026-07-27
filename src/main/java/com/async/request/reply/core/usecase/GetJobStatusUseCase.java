@@ -6,13 +6,11 @@ import com.async.request.reply.core.port.out.JobPolicyPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.result.JobStatusSnapshot;
 import com.async.request.reply.core.result.JobStatusView;
-import org.springframework.stereotype.Service;
 
 /**
  * Implementação do {@link GetJobStatusPortIn}.
  * Encapsula a decisão status → outcome, livre de HTTP concerns.
  */
-@Service
 public class GetJobStatusUseCase implements GetJobStatusPortIn {
 
     private final JobRepositoryPortOut repository;
@@ -37,9 +35,15 @@ public class GetJobStatusUseCase implements GetJobStatusPortIn {
                     policy.retryAfterSeconds(),
                     policy.expiresAt(job)
             );
-            case COMPLETED -> new JobStatusView.Completed(policy.expiresAt(job));
+            case COMPLETED -> new JobStatusView.Completed(
+                    JobStatusSnapshot.from(job),
+                    policy.expiresAt(job)
+            );
             case FAILED    -> new JobStatusView.Failed(job.getFailure());
-            case CANCELLED -> new JobStatusView.Cancelled();
+            case CANCELLED -> new JobStatusView.Cancelled(
+                    JobStatusSnapshot.from(job),
+                    policy.expiresAt(job)
+            );
         };
     }
 }

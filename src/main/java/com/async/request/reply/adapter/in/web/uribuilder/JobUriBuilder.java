@@ -16,8 +16,9 @@ public class JobUriBuilder {
         return base().path("/jobs/{id}/status").buildAndExpand(jobId).toUri();
     }
 
-    public URI result(String jobId) {
-        return base().path("/jobs/{id}/result").buildAndExpand(jobId).toUri();
+    /** Stream de eventos (SSE): o caminho normal para saber que o job terminou. */
+    public URI events(String jobId) {
+        return base().path("/jobs/{id}/events").buildAndExpand(jobId).toUri();
     }
 
     private ServletUriComponentsBuilder base() {

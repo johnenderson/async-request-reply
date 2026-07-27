@@ -28,18 +28,26 @@
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
+		<!-- Storage JDBC (Aurora PostgreSQL): ver ADR 0004.
+		     Apenas spring-jdbc, sem starter: uma biblioteca nao deve impor pool de
+		     conexao nem ativar DataSourceAutoConfiguration — o DataSource e o
+		     driver sao do projeto consumidor, que ja fala com o banco dele. -->
 		<dependency>
-			<groupId>org.redisson</groupId>
-			<artifactId>redisson-spring-boot-starter</artifactId>
-			<version>4.4.0</version>
-			<exclusions>
-				<!-- Redisson fornece a RedisConnectionFactory; remove o Lettuce
-				     para não haver duas connection factories no contexto -->
-				<exclusion>
-					<groupId>io.lettuce</groupId>
-					<artifactId>lettuce-core</artifactId>
-				</exclusion>
-			</exclusions>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-jdbc</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- Gera spring-configuration-metadata.json: autocomplete das propriedades
+		     async-jobs.* na IDE do projeto consumidor -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-configuration-processor</artifactId>
+			<optional>true</optional>
 		</dependency>
 
 		<dependency>

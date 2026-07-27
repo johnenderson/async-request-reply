@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -35,19 +36,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
- * E2E sobre Tomcat REAL (porta aleatória) + Valkey real: exercita o fluxo
- * principal do padrão pela borda HTTP de verdade — URLs absolutas construídas
- * a partir da request, redirect 303 sem auto-follow, formato dos headers.
+ * E2E sobre Tomcat REAL (porta aleatória) + Postgres real: exercita o fluxo
+ * principal do padrão pela borda HTTP de verdade — URLs absolutas construídas a
+ * partir da request, formato dos headers, stream SSE sobre socket.
  * Complementa os testes MockMvc, que não passam pelo servlet container.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "async-jobs.coalesce-in-flight=false",
-                "async-jobs.retry-after-seconds=1",
-                "async-jobs.sse.enabled=true"
+                "async-jobs.retry-after-seconds=1"
         })
-class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
+class TomcatEndToEndIntegrationTest extends PostgresContainerTestSupport {
 
     @LocalServerPort
     int port;
@@ -55,13 +55,14 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
     /** Mantém o handler "lento" ativo até o teste liberar (sem sleep fixo). */
     static final AtomicReference<CountDownLatch> GATE = new AtomicReference<>(new CountDownLatch(0));
 
-    /** Redirect.NEVER: queremos assertar o 303 cru, não o destino dele. */
+    /** Redirect.NEVER: nenhuma resposta do contrato redireciona — se aparecer, o teste falha. */
     final HttpClient http = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
 
     @BeforeEach
     void resetGate() {
+        truncateJobs();
         GATE.set(new CountDownLatch(1));
     }
 
@@ -74,33 +75,31 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
     static class Handlers {
 
         @Bean
-        JobHandler<List<String>> e2eReportHandler() {
-            return new JobHandler<>() {
+        JobHandler e2eReportHandler() {
+            return new JobHandler() {
                 public String type() { return "e2e-report"; }
-                public List<String> handle() { return List.of("linha-1", "linha-2", "linha-3"); }
+                public void handle() { }
             };
         }
 
         @Bean
-        JobHandler<List<String>> e2eSlowHandler() {
-            return new JobHandler<>() {
+        JobHandler e2eSlowHandler() {
+            return new JobHandler() {
                 public String type() { return "e2e-slow"; }
-                public List<String> handle() {
-                    try { GATE.get().await(10, TimeUnit.SECONDS); }
-                    catch (InterruptedException _) { Thread.currentThread().interrupt(); }
-                    return List.of("done");
+                public void handle() {
+                    TestGate.await(GATE.get());
                 }
             };
         }
     }
 
     // -------------------------------------------------------------------------
-    // Fluxo principal: submit → 202 → polling → 303 → resultado paginado
+    // Fluxo principal: submit → 202 → acompanhamento → estado terminal legível
     // -------------------------------------------------------------------------
 
     @Test
     void fullLifecycleOverRealHttp() throws Exception {
-        // 1. Submit: 202 + Location absoluto + Retry-After + body com statusUrl
+        // 1. Submit: 202 + Location absoluto + Retry-After + body com as duas URLs
         HttpResponse<String> submitted = post("/jobs/e2e-report");
         assertThat(submitted.statusCode()).isEqualTo(202);
 
@@ -109,20 +108,16 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
         assertThat(statusUrl).isEqualTo("http://localhost:" + port + "/jobs/" + jobId + "/status");
         assertThat(header(submitted, "Retry-After")).isEqualTo("1");
         assertThat(JsonPath.<String>read(submitted.body(), "$.statusUrl")).isEqualTo(statusUrl);
+        assertThat(JsonPath.<String>read(submitted.body(), "$.eventsUrl"))
+                .isEqualTo("http://localhost:" + port + "/jobs/" + jobId + "/events");
 
-        // 2. Polling até concluir: 303 See Other apontando para o /result
-        HttpResponse<String> redirect = awaitStatusCode(statusUrl, 303);
-        String resultUrl = header(redirect, "Location");
-        assertThat(resultUrl).isEqualTo("http://localhost:" + port + "/jobs/" + jobId + "/result");
-        assertHttpDate(header(redirect, "Expires"));
-
-        // 3. Resultado paginado direto do Valkey (page=1, size=2 → último item)
-        HttpResponse<String> result = get(resultUrl + "?page=1&size=2");
-        assertThat(result.statusCode()).isEqualTo(200);
-        assertThat(JsonPath.<String>read(result.body(), "$.jobId")).isEqualTo(jobId);
-        assertThat(JsonPath.<List<String>>read(result.body(), "$.content")).containsExactly("linha-3");
-        assertThat(JsonPath.<Integer>read(result.body(), "$.totalElements")).isEqualTo(3);
-        assertThat(JsonPath.<Integer>read(result.body(), "$.totalPages")).isEqualTo(2);
+        // 2. Ao concluir, o recurso de status segue legivel e diz COMPLETED — a
+        //    lib nao serve dados (ADR 0004), logo nao ha redirect para resultado
+        HttpResponse<String> completed = awaitStatus(statusUrl, "COMPLETED");
+        assertThat(completed.statusCode()).isEqualTo(200);
+        assertThat(completed.headers().firstValue("Location")).isEmpty();
+        assertHttpDate(header(completed, "Expires"));
+        assertThat(JsonPath.<Integer>read(completed.body(), "$.percentComplete")).isEqualTo(100);
     }
 
     @Test
@@ -138,16 +133,7 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
     }
 
     @Test
-    void resultBeforeCompletionConflictsWith409() throws Exception {
-        HttpResponse<String> submitted = post("/jobs/e2e-slow");
-        String jobId = JsonPath.read(submitted.body(), "$.jobId");
-
-        HttpResponse<String> result = get(url("/jobs/" + jobId + "/result"));
-        assertThat(result.statusCode()).isEqualTo(409);
-    }
-
-    @Test
-    void cancelOverRealHttpMakesStatusGone() throws Exception {
+    void cancelOverRealHttpMakesStatusReportCancelled() throws Exception {
         HttpResponse<String> submitted = post("/jobs/e2e-slow");
         String jobId = JsonPath.read(submitted.body(), "$.jobId");
 
@@ -155,7 +141,8 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
         assertThat(cancel.statusCode()).isEqualTo(202);
 
         HttpResponse<String> status = get(url("/jobs/" + jobId + "/status"));
-        assertThat(status.statusCode()).isEqualTo(410);
+        assertThat(status.statusCode()).isEqualTo(200);
+        assertThat(JsonPath.<String>read(status.body(), "$.status")).isEqualTo("CANCELLED");
     }
 
     @Test
@@ -178,8 +165,9 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
 
     @Test
     void unknownJobReturns404() throws Exception {
+        assertThat(get(url("/jobs/" + UUID.randomUUID() + "/status")).statusCode()).isEqualTo(404);
+        // id que nem tem forma de id ainda e "job inexistente", nao erro de servidor
         assertThat(get(url("/jobs/nao-existe/status")).statusCode()).isEqualTo(404);
-        assertThat(get(url("/jobs/nao-existe/result")).statusCode()).isEqualTo(404);
     }
 
     // -------------------------------------------------------------------------
@@ -211,21 +199,25 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
 
             GATE.get().countDown(); // libera o handler → COMPLETED → push
 
+            // o evento complete diz apenas "terminou, neste instante": o cliente
+            // le o resultado no endpoint de dominio dele (ADR 0004)
             readUntil(reader, line -> line.startsWith("event:complete"));
-            String completeData = readUntil(reader, line -> line.startsWith("data:")).getLast().substring("data:".length());
-            assertThat(JsonPath.<String>read(completeData, "$.resultUrl")).isEqualTo(url("/jobs/" + jobId + "/result"));
+            String completeData = readUntil(reader, line -> line.startsWith("data:"))
+                    .getLast().substring("data:".length());
+            assertThat(JsonPath.<String>read(completeData, "$.jobId")).isEqualTo(jobId);
             assertThat(JsonPath.<String>read(completeData, "$.lastUpdatedAt")).isNotBlank();
-            String resultUrl = JsonPath.read(completeData, "$.resultUrl");
 
             awaitStreamEnd(reader); // evento terminal fecha o stream no servidor
-
-            assertThat(get(resultUrl).statusCode()).isEqualTo(200);
         }
+
+        // e o status confirma o mesmo estado terminal, para quem chegou depois
+        assertThat(JsonPath.<String>read(get(url("/jobs/" + jobId + "/status")).body(), "$.status"))
+                .isEqualTo("COMPLETED");
     }
 
     @Test
     void sseForUnknownJobReturns404() throws Exception {
-        HttpRequest open = HttpRequest.newBuilder(URI.create(url("/jobs/nao-existe/events")))
+        HttpRequest open = HttpRequest.newBuilder(URI.create(url("/jobs/" + UUID.randomUUID() + "/events")))
                 .header("Accept", "text/event-stream")
                 .GET().build();
         assertThat(http.send(open, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(404);
@@ -261,14 +253,15 @@ class TomcatEndToEndIntegrationTest extends ValkeyContainerTestSupport {
                 .orElseThrow(() -> new AssertionError("header ausente: " + name));
     }
 
-    /** Polling com timeout até o status endpoint responder o código esperado. */
-    private HttpResponse<String> awaitStatusCode(String statusUrl, int expected) {
+    /** Polling com timeout até o status endpoint reportar o estado esperado. */
+    private HttpResponse<String> awaitStatus(String statusUrl, String expectedStatus) {
         AtomicReference<HttpResponse<String>> last = new AtomicReference<>();
         Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(100))
                 .until(() -> {
                     HttpResponse<String> response = get(statusUrl);
                     last.set(response);
-                    return response.statusCode() == expected;
+                    return response.statusCode() == 200
+                            && expectedStatus.equals(JsonPath.read(response.body(), "$.status"));
                 });
         return last.get();
     }

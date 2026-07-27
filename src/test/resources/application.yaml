@@ -4,7 +4,7 @@ spring:
 
 # Config usada apenas nos testes da própria lib
 async-jobs:
-  result-ttl: PT1H
+  retention: PT1H
   retry-after-seconds: 5
 
 logging:

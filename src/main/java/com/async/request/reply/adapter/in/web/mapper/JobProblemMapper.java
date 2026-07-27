@@ -19,7 +19,6 @@ public class JobProblemMapper {
         HttpStatus status = switch (ex.errorType()) {
             case VALIDATION -> HttpStatus.BAD_REQUEST;            // 400
             case CONFLICT   -> HttpStatus.UNPROCESSABLE_CONTENT;  // 422
-            case INTERNAL   -> HttpStatus.INTERNAL_SERVER_ERROR;  // 500
         };
         return problem(status, ex.getTitle(), ex.getMessage());
     }

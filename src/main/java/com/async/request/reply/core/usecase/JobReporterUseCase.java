@@ -1,51 +1,45 @@
 package com.async.request.reply.core.usecase;
 
-import com.async.request.reply.core.port.out.JobResultStorePortOut;
-import com.async.request.reply.core.service.JobTransitionService;
+import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.spi.JobReporter;
-import org.springframework.stereotype.Service;
-
-import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * Implementação do {@link JobReporter}. Os itens do resultado vão para o
- * result store (paginável); progresso e transições terminais passam pelo
- * {@link JobTransitionService} — completar um job já terminal (ex: cancelado)
- * é ignorado.
+ * Implementação do {@link JobReporter}. Cada método é uma transição atômica no
+ * repositório: o {@code UPDATE} condicional recusa sozinho o report em job
+ * terminal, sem precisar de leitura prévia nem de lock.
  */
-@Service
 public class JobReporterUseCase implements JobReporter {
 
-    private final JobResultStorePortOut resultStore;
-    private final JobTransitionService transition;
+    private static final Logger log = LoggerFactory.getLogger(JobReporterUseCase.class);
 
-    public JobReporterUseCase(JobResultStorePortOut resultStore, JobTransitionService transition) {
-        this.resultStore = resultStore;
-        this.transition = transition;
+    private final JobRepositoryPortOut repository;
+
+    public JobReporterUseCase(JobRepositoryPortOut repository) {
+        this.repository = repository;
     }
 
     @Override
-    public void progress(String jobId, int percent) {
-        transition.progress(jobId, percent);
+    public boolean progress(String jobId, int percent) {
+        return reported(jobId, "progress", repository.progress(jobId, percent).isPresent());
     }
 
     @Override
-    public void append(String jobId, List<?> items) {
-        resultStore.append(jobId, items);
+    public boolean complete(String jobId) {
+        return reported(jobId, "complete", repository.complete(jobId).isPresent());
     }
 
     @Override
-    public void complete(String jobId) {
-        transition.complete(jobId);
+    public boolean fail(String jobId, String title, String detail) {
+        return reported(jobId, "fail", repository.fail(jobId, title, detail).isPresent());
     }
 
-    @Override
-    public void complete(String jobId, Object result) {
-        transition.complete(jobId, result);
-    }
-
-    @Override
-    public void fail(String jobId, String title, String detail) {
-        transition.fail(jobId, title, detail);
+    private static boolean reported(String jobId, String operation, boolean accepted) {
+        if (!accepted) {
+            log.debug("Report '{}' ignorado para o job '{}': inexistente ou em estado terminal",
+                    operation, jobId);
+        }
+        return accepted;
     }
 }

@@ -13,7 +13,6 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,7 +29,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * compartilham o mesmo jobId (coalescing automático, sem o consumidor enviar chave).
  */
 @SpringBootTest(properties = "async-jobs.coalesce-in-flight=true")
-class SingleFlightTest extends ValkeyContainerTestSupport {
+class SingleFlightTest extends PostgresContainerTestSupport {
 
     @Autowired
     WebApplicationContext wac;
@@ -42,6 +41,7 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
 
     @BeforeEach
     void setup() {
+        truncateJobs();
         mvc = MockMvcBuilders.webAppContextSetup(wac).build();
         GATE.set(new CountDownLatch(1));
     }
@@ -54,13 +54,11 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
     @TestConfiguration
     static class Handlers {
         @Bean
-        JobHandler<List<String>> slowSfHandler() {
-            return new JobHandler<>() {
+        JobHandler slowSfHandler() {
+            return new JobHandler() {
                 public String type() { return "sf-test"; }
-                public List<String> handle() {
-                    try { GATE.get().await(2, TimeUnit.SECONDS); }
-                    catch (InterruptedException _) { Thread.currentThread().interrupt(); }
-                    return List.of("ativos", "inativos");
+                public void handle() {
+                    TestGate.await(GATE.get());
                 }
             };
         }
@@ -75,9 +73,10 @@ class SingleFlightTest extends ValkeyContainerTestSupport {
     }
 
     /**
-     * Regressão da corrida claim × persistência: dois submits SIMULTÂNEOS do
-     * mesmo type não podem criar dois jobs (peek → create → claim roda sob o
-     * lock distribuído da chave).
+     * Regressão da corrida de criação: dois submits SIMULTÂNEOS do mesmo type
+     * não podem criar dois jobs. Sem lock distribuído — quem serializa é o
+     * índice único parcial sobre {@code coalescing_key} nos estados ativos, e o
+     * perdedor recebe o job do vencedor (ADR 0004).
      */
     @Test
     void concurrentSubmitsOfSameTypeShareSameJobId() throws Exception {
