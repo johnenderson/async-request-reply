@@ -1,8 +1,14 @@
 # ADR 0001 — Filtragem/agrupamento dinâmico do resultado (adiado)
 
-- **Status:** Adiado (não implementado)
+- **Status:** Obsoleto — substituído pelo ADR 0004
 - **Data:** 2026-06
 - **Contexto:** building block Asynchronous Request-Reply (resultado materializado em chunks no Valkey/Redis)
+
+> **Nota (2026-07):** este ADR ficou sem objeto. O ADR 0004 removeu o plano de
+> dados: não há mais resultado materializado na lib nem `GET /jobs/{id}/result`,
+> e a leitura — com os filtros e agrupamentos que o consumidor quiser — passou a
+> ser do endpoint de domínio dele, em SQL. A pergunta "como filtrar o resultado
+> dinamicamente" deixou de ser da biblioteca. Mantido como registro histórico.
 
 ## Contexto
 

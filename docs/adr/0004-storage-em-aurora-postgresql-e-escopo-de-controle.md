@@ -130,6 +130,16 @@ adapter JDBC entra **ao lado** do Redis (selecionável por `async-jobs.storage`)
 com a suíte verde em cada passo; a remoção do Redis é o último passo, depois de o
 caminho novo estar coberto por testes.
 
+**Concluída em 2026-07.** `jdbc` é o storage default (`async-jobs.storage`
+existe só para o consumidor optar por um repositório próprio), o Redisson saiu do
+`pom.xml` e os ports que só existiam por causa do Redis foram removidos:
+`SingleFlightPortOut` (absorvido pelo índice único), `JobEventPublisherPortOut`
+(sem pub/sub, o subscriber deriva do estado), `JobResultStorePortOut` e
+`untrackActive` (não há índice de ativos separado — "ativo" é um predicado na
+tabela). A propriedade `async-jobs.key-prefix` perdeu sentido e saiu;
+`async-jobs.result-ttl` virou `async-jobs.retention`, já que não há mais
+resultado a expirar.
+
 ## Conformidade com o padrão (Azure Architecture Center)
 
 Revisão item a item contra a especificação do Asynchronous Request-Reply.
@@ -149,6 +159,15 @@ status redireciona "para a URL daquele recurso" quando a operação cria um recu
 novo. Aqui a operação não cria recurso: ela reaquece dados existentes. O
 `/jobs/{id}/result` era um recurso sintético embrulhando dado alheio; apontar para
 o endpoint de domínio é a leitura literal.
+
+> **Nota de implementação (2026-07): o `303` ficou adiado.** O que foi
+> construído é `200 OK` com `status: COMPLETED`, sem redirect. Redirecionar exige
+> que a lib conheça a URL de domínio de cada `type` — uma configuração
+> `async-jobs.types.<type>.result-url` que ninguém pediu ainda e que criaria uma
+> dependência da lib para o mapa de rotas do consumidor. Como o cliente já
+> descobre a conclusão pelo evento `complete` do SSE (ou pelo status), o redirect
+> não elimina nenhum passo hoje: ele só se paga quando houver um cliente genérico
+> que não sabe para onde ir. Reabrir quando esse cliente existir.
 
 **Reuso por frescor tem respaldo direto.** A orientação de idempotência do doc já
 manda devolver o recurso de status existente em vez de enfileirar segundo
@@ -171,7 +190,7 @@ Desvios que permanecem, conscientes:
   `FOR UPDATE SKIP LOCKED`, permitindo que qualquer instância puxe `PENDING` e
   tornando a varredura o mecanismo principal de distribuição em vez de rede de
   segurança. Fora do escopo desta ADR; registrado como opção.
-- **O gate deixa de ser garantia**: com o `303` apontando para endpoint de domínio
+- **O gate deixa de ser garantia**: com a leitura indo para um endpoint de domínio
   compartilhado, "só leia quando terminar" passa a ser conselho — nada impede o
   cliente de ler dado morno antes. É inerente à semântica de cache quente; por
   isso a frescura deve ser exposta na resposta de domínio.
