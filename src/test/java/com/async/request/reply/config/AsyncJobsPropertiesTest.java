@@ -77,6 +77,36 @@ class AsyncJobsPropertiesTest {
                 .isEqualTo(Duration.ofMinutes(30));
     }
 
+    /**
+     * O frescor procura a última carga concluída pela `coalescing_key`, que só é
+     * gravada quando o coalescing está ligado. Sem essa validação, ligar apenas
+     * `freshness.enabled` seria um no-op silencioso: a configuração pede para
+     * poupar carga e nada acontece.
+     */
+    @Test
+    @DisplayName("recusa frescor ligado sem coalescing: seria um no-op silencioso")
+    void should_reject_freshness_without_coalescing() {
+        AsyncJobsProperties.Freshness freshness =
+                new AsyncJobsProperties.Freshness(true, Duration.ofMinutes(30), Map.of());
+
+        assertThatThrownBy(() -> new AsyncJobsProperties(
+                null, null, false, null, null, freshness, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("async-jobs.coalesce-in-flight");
+    }
+
+    @Test
+    @DisplayName("aceita frescor ligado junto com coalescing")
+    void should_accept_freshness_with_coalescing() {
+        AsyncJobsProperties.Freshness freshness =
+                new AsyncJobsProperties.Freshness(true, Duration.ofMinutes(30), Map.of());
+
+        AsyncJobsProperties properties = new AsyncJobsProperties(
+                null, null, true, null, null, freshness, null);
+
+        assertThat(properties.freshness().enabled()).isTrue();
+    }
+
     /** Frescor desligado não impõe relação com a retenção: a janela é inerte. */
     @Test
     @DisplayName("ignora a relacao quando o frescor esta desligado")
@@ -87,8 +117,9 @@ class AsyncJobsPropertiesTest {
         assertThat(properties(Duration.ofHours(1), freshness).freshness().enabled()).isFalse();
     }
 
+    /** Coalescing ligado porque o frescor depende dele (ver teste acima). */
     private static AsyncJobsProperties properties(Duration retention,
                                                   AsyncJobsProperties.Freshness freshness) {
-        return new AsyncJobsProperties(retention, null, false, null, null, freshness, null);
+        return new AsyncJobsProperties(retention, null, true, null, null, freshness, null);
     }
 }

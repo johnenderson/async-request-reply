@@ -197,8 +197,11 @@ Possiveis respostas:
 - `404 Not Found`: job inexistente.
 
 > Nota: o cancelamento marca o job como `CANCELLED` e impede que uma conclusao
-> posterior sobrescreva o estado, mas **nao interrompe** uma execucao ja em
-> andamento — a rotina continua rodando ate o fim.
+> posterior sobrescreva o estado, mas **nao interrompe** a thread da rotina.
+> Interromper trabalho a meio caminho deixaria a base do consumidor em estado
+> parcial, sem ninguem para consertar — entao quem decide parar e a propria
+> rotina, consultando `ctx.isCancelled()` entre lotes
+> ([cancelamento cooperativo](#cancelamento-cooperativo)).
 
 ## Estados do job
 
@@ -226,16 +229,21 @@ public class ManterContasQuentesHandler implements JobHandler {
     }
 
     @Override
-    public void handle() {
+    public void handle(JobContext ctx) {
         // regra de negocio do projeto consumidor: varre as contas,
         // avalia a aptidao de cada uma e grava o resultado na base
-        contas.reavaliarTodas();
+        for (var lote : contas.emLotes(500)) {
+            if (ctx.isCancelled()) {
+                return;                  // para num ponto consistente
+            }
+            contas.reavaliar(lote);
+        }
     }
 }
 ```
 
-O `handle()` nao retorna nada: a rotina deixa o resultado na base do consumidor,
-e a lib apenas registra que a carga terminou.
+O `handle` nao retorna nada: a rotina deixa o resultado na base do consumidor, e
+a lib apenas registra que a carga terminou.
 
 Regras importantes:
 
@@ -256,6 +264,41 @@ Se o worker morrer sem reportar, a recuperacao automatica marca o job como falho
 apos `async-jobs.recovery.processing-timeout`. Rotinas legitimamente longas devem
 chamar `progress` periodicamente para renovar esse prazo.
 
+### Cancelamento cooperativo
+
+`ctx.isCancelled()` diz se o job foi cancelado enquanto a rotina roda. A lib nao
+interrompe a thread de proposito: abortar no meio deixaria a base do consumidor
+parcialmente atualizada, e so a rotina sabe onde e seguro parar.
+
+- **Cada chamada le o storage** — pergunte entre lotes, nao a cada item.
+- Rotinas que ja chamam `progress` periodicamente **nao precisam disto**: o
+  `false` devolvido por `progress` carrega a mesma informacao, sem leitura extra.
+- Parar nao muda o estado: o job permanece `CANCELLED`. Uma rotina que retorna
+  normalmente depois de parar nao "descancela" o job — a transicao para
+  `COMPLETED` e recusada em estado terminal.
+
+### Saber de quando sao os dados
+
+Como a lib nao serve dados, nada impede o cliente de ler a base antes de a carga
+terminar. O `JobFreshness` existe para a resposta de dominio poder dizer isso:
+
+```java
+@GetMapping("/contas/aptas")
+ResponseEntity<ContasResponse> aptas() {
+    var contas = repository.buscarAptas();          // SQL de dominio, otimizado
+    return ResponseEntity.ok(new ContasResponse(
+            contas,
+            freshness.lastRefreshedAt("contas").orElse(null),   // "dados de"
+            freshness.isFresh("contas")));                      // dentro da janela?
+}
+```
+
+- `lastRefreshedAt(type)`: quando a ultima carga concluiu — a idade real dos
+  dados. Vazio se nenhuma carga concluiu; uma carga que falhou nao conta.
+- `isFresh(type)`: se essa conclusao esta dentro da janela configurada. Sempre
+  `false` sem janela configurada, pela mesma razao que toda submissao dispara
+  carga nesse caso.
+
 ## Politicas implementadas
 
 - **Polling hint**: respostas usam `Retry-After` para orientar quando o client deve consultar novamente.
@@ -267,6 +310,8 @@ chamar `progress` periodicamente para renovar esse prazo.
 - **Eventos em tempo real**: `GET /jobs/{id}/events` (SSE) entrega snapshot + transicoes. Faz parte do contrato, sem flag para desligar.
 - **Execucao isolada**: os jobs rodam em um executor proprio da lib com **threads virtuais**, nunca no executor default da aplicacao; o limite de concorrencia (`async-jobs.processing.concurrency-limit`) e o backpressure.
 - **Recuperacao de jobs orfaos**: a varredura reenfileira jobs que ficaram `PENDING` (instancia caiu antes de processar) e falha `PROCESSING` sem atualizacao ha muito tempo (worker morreu sem reportar). Ela so age sobre `type`s registrados na instancia, para nao interferir em jobs de outra aplicacao no mesmo banco.
+- **Cancelamento cooperativo**: `ctx.isCancelled()` deixa a rotina parar num ponto consistente. A lib nao interrompe a thread — ver a secao da SPI.
+- **Frescura consultavel**: `JobFreshness` permite ao endpoint de dominio dizer de quando sao os dados que esta devolvendo.
 
 Como o submit nao recebe parametros, o dedupe/single-flight e por `type`.
 Operacoes logicamente distintas devem usar `type`s distintos.
@@ -280,6 +325,7 @@ segue quente e a lib devolve aquele job em vez de disparar uma nova execucao.
 ```yaml
 async-jobs:
   retention: PT6H
+  coalesce-in-flight: true
   freshness:
     enabled: true
     default-window: PT1H
@@ -288,6 +334,10 @@ async-jobs:
 ```
 
 - E **opt-in**: sem `freshness.enabled=true`, todo submit dispara carga nova.
+- Exige `coalesce-in-flight=true`, e o startup falha se so o frescor for ligado:
+  a janela localiza a ultima carga concluida pelo escopo de coalescing, que so e
+  gravado quando o coalescing esta ligado. Sem a validacao, ligar so o frescor
+  seria um no-op silencioso.
 - Sem janela configurada para o `type` (nem `default-window`), o frescor nao se aplica.
 - So conta job `COMPLETED`: uma carga que falhou nao suprime a proxima tentativa.
 - `Cache-Control: no-cache` no submit ignora a janela e forca uma carga nova.
@@ -343,7 +393,7 @@ Parametros proprios:
 | `async-jobs.retention` | `PT1H` | Por quanto tempo o registro de controle do job segue relevante. Alimenta o header `Expires` (a partir da ultima atualizacao) e o timeout do stream SSE. Aceita formato `Duration` do Spring, como `PT10M`, `PT1H` ou `P1D`. |
 | `async-jobs.retry-after-seconds` | `5` | Hint enviado no header `Retry-After` em submissao e consulta de status enquanto o job esta ativo. |
 | `async-jobs.coalesce-in-flight` | `false` | Quando `true`, chamadas equivalentes enquanto um job ainda esta ativo reutilizam o mesmo job em andamento em vez de criar outro. |
-| `async-jobs.freshness.enabled` | `false` | Liga a janela de frescor: uma carga concluida dentro da janela dispensa carga nova. |
+| `async-jobs.freshness.enabled` | `false` | Liga a janela de frescor: uma carga concluida dentro da janela dispensa carga nova. Exige `coalesce-in-flight=true`. |
 | `async-jobs.freshness.default-window` | — | Janela aplicada aos `type`s sem configuracao propria. Sem valor, o frescor nao se aplica a eles. |
 | `async-jobs.freshness.per-type.<type>` | — | Janela especifica de um `type`, sobrepondo a default. |
 | `async-jobs.processing.concurrency-limit` | `256` | Jobs processados simultaneamente no executor proprio da lib (threads virtuais). Ao saturar, a submissao aguarda vaga — backpressure em vez de acumulo ilimitado. |
@@ -404,10 +454,12 @@ A suite de testes registra rotinas de exemplo e cobre:
 - `404 Not Found` para job inexistente, inclusive quando o id nem tem forma de UUID (nao `500`);
 - single-flight (coalescing) por indice unico, inclusive com submits concorrentes;
 - janela de frescor: carga suprimida com dado quente, refeita com `Cache-Control: no-cache`;
+- frescura consultavel: `lastRefreshedAt` ignora carga ativa e carga que falhou, e `isFresh` e falso sem janela configurada;
+- cancelamento cooperativo: a rotina em execucao ve `isCancelled()` virar `true`, para no meio, e o `complete` seguinte e recusado;
 - job com falha (`422` + Problem Detail no status), inclusive com titulo em branco;
 - report recusado em job terminal (`JobReporter` devolvendo `false`);
 - recuperacao de jobs orfaos: reenfileiramento de `PENDING`, falha de `PROCESSING` zumbi e nao-interferencia em `type` de outra aplicacao;
-- validacao de configuracao: frescor maior que a retencao falha o startup;
+- validacao de configuracao: frescor maior que a retencao, ou frescor sem coalescing, falham o startup;
 - timestamps e `Expires` determinísticos com um `Clock` fixo injetado;
 - fluxo fire-and-forget via `JobReporter`.
 
@@ -428,6 +480,17 @@ Ultima verificacao local:
 ./mvnw clean test
 ```
 
-Resultado: `Tests run: 123, Failures: 0, Errors: 0, Skipped: 0`.
+Resultado: `Tests run: 143, Failures: 0, Errors: 0, Skipped: 0`.
 
 Para rodar só os rápidos: `./mvnw test -Dgroups='!integration'`.
+
+## Evolucao registrada
+
+O dispatch e in-process: o job roda na instancia que recebeu o `POST`, e a
+varredura de recuperacao e a rede de segurancia. A alternativa — a propria tabela
+como fila, via `FOR UPDATE SKIP LOCKED` — esta desenhada no
+`docs/adr/0005-dispatch-por-fila-na-propria-tabela.md`, junto com o critério de
+quando vale implementar. Resumo: ganha distribuicao real entre instancias, custa
+latencia de um ciclo de poll e uma peca viva a mais; para uma rotina de
+reaquecimento com single-flight ligado (um job ativo por escopo), nao ha fila a
+balancear.

@@ -164,6 +164,32 @@ class JdbcJobRepositoryTransitionsTest extends PostgresContainerTestSupport {
     }
 
     @Test
+    @DisplayName("findLastCompletedAt devolve a conclusão da última carga, sem janela")
+    void findLastCompletedAt_should_return_the_last_completed_instant() {
+        assertThat(repository.findLastCompletedAt(TYPE))
+                .as("nenhuma carga concluida ainda")
+                .isEmpty();
+
+        String id = newJob();
+        repository.complete(id);
+
+        // sem janela: e a pergunta "quando esses dados ficaram quentes?", que o
+        // consumidor responde no endpoint de dominio dele
+        assertThat(repository.findLastCompletedAt(TYPE)).contains(NOW);
+    }
+
+    @Test
+    @DisplayName("findLastCompletedAt ignora job ativo e job que falhou")
+    void findLastCompletedAt_should_ignore_active_and_failed_jobs() {
+        String failed = newJob();
+        repository.fail(failed, "Processing error", "estourou");
+
+        assertThat(repository.findLastCompletedAt(TYPE))
+                .as("carga que falhou nao deixou dado quente")
+                .isEmpty();
+    }
+
+    @Test
     @DisplayName("id malformado é apenas um job inexistente, não um erro")
     void findById_should_return_empty_when_id_is_not_a_uuid() {
         // o id vem do path da request: qualquer string chega até aqui, e um

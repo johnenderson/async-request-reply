@@ -45,6 +45,26 @@ public record AsyncJobsProperties(
         recovery = (recovery == null) ? new Recovery(null, null, null, null) : recovery;
 
         requireFreshnessWithinRetention(retention, freshness);
+        requireCoalescingForFreshness(coalesceInFlight, freshness);
+    }
+
+    /**
+     * O frescor localiza a última carga concluída pela {@code coalescing_key}, e
+     * essa coluna só é gravada quando o coalescing está ligado. Sem esta
+     * validação, ligar apenas {@code freshness.enabled} seria um <b>no-op
+     * silencioso</b>: a configuração pede para poupar carga e nada acontece.
+     *
+     * <p>Não é acidental que os dois andem juntos — ambos falam do mesmo escopo:
+     * coalescing cobre carga <b>em andamento</b>, frescor cobre carga <b>já
+     * concluída</b>.</p>
+     */
+    private static void requireCoalescingForFreshness(boolean coalesceInFlight, Freshness freshness) {
+        if (freshness.enabled() && !coalesceInFlight) {
+            throw new IllegalArgumentException(
+                    "async-jobs.freshness.enabled=true exige async-jobs.coalesce-in-flight=true: "
+                            + "a janela de frescor localiza a ultima carga concluida pelo escopo de "
+                            + "coalescing, que so e gravado quando o coalescing esta ligado.");
+        }
     }
 
     /**

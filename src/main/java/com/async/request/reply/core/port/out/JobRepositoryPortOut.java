@@ -64,4 +64,11 @@ public interface JobRepositoryPortOut {
      * próxima tentativa.</p>
      */
     Optional<Job> findFreshCompleted(String coalescingKey, Instant completedAfter);
+
+    /**
+     * Quando a última carga daquele escopo concluiu, <b>sem</b> filtro de janela.
+     * É a idade real dos dados, exposta ao consumidor via
+     * {@code JobFreshness} para a resposta de domínio poder dizer "dados de".
+     */
+    Optional<Instant> findLastCompletedAt(String coalescingKey);
 }

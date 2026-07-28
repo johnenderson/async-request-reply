@@ -189,14 +189,24 @@ Desvios que permanecem, conscientes:
   Aurora existe uma evolução natural — a própria tabela `async_jobs` como fila via
   `FOR UPDATE SKIP LOCKED`, permitindo que qualquer instância puxe `PENDING` e
   tornando a varredura o mecanismo principal de distribuição em vez de rede de
-  segurança. Fora do escopo desta ADR; registrado como opção.
+  segurança. → **detalhado no ADR 0005**, com o critério de quando implementar;
+  permanece desvio consciente por ora.
 - **O gate deixa de ser garantia**: com a leitura indo para um endpoint de domínio
   compartilhado, "só leia quando terminar" passa a ser conselho — nada impede o
   cliente de ler dado morno antes. É inerente à semântica de cache quente; por
-  isso a frescura deve ser exposta na resposta de domínio.
+  isso a frescura deve ser exposta na resposta de domínio. → **endereçado**: a SPI
+  `JobFreshness` (`lastRefreshedAt`/`isFresh`) permite ao endpoint de domínio
+  declarar de quando são os dados. O desvio deixa de ser silencioso: continua
+  possível ler dado morno, mas o cliente agora consegue saber que é.
 - **Cancelar não interrompe a rotina em andamento**, e o doc pede para avaliar
   rollback parcial ou transação compensatória. Para reaquecimento não há o que
   compensar; se surgir rotina com efeito colateral externo, reabrir.
+  → **endereçado de forma cooperativa**: `JobContext.isCancelled()` deixa a
+  rotina parar num ponto consistente que ela escolhe. Não interrompemos a thread
+  de propósito — abortar no meio deixaria a base do consumidor parcialmente
+  atualizada, sem ninguém para consertar; a rotina é quem sabe onde é seguro
+  parar. Rotinas que já reportam progresso têm o mesmo sinal de graça, pelo
+  `false` do `progress`.
 - **SSE como complemento, não alternativa**: o doc posiciona SSE na seção de
   "quando este padrão não é adequado". Mantemos o polling como baseline e SSE como
   transporte adicional — superconjunto deliberado, não contradição.

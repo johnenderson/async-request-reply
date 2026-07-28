@@ -22,8 +22,10 @@ import com.async.request.reply.core.port.out.JobSubmissionPolicyPortOut;
 import com.async.request.reply.core.service.StaleJobRecoveryService;
 import com.async.request.reply.core.usecase.CancelJobUseCase;
 import com.async.request.reply.core.usecase.GetJobStatusUseCase;
+import com.async.request.reply.core.usecase.JobFreshnessUseCase;
 import com.async.request.reply.core.usecase.JobReporterUseCase;
 import com.async.request.reply.core.usecase.SubmitJobUseCase;
+import com.async.request.reply.spi.JobFreshness;
 import com.async.request.reply.spi.JobReporter;
 import com.async.request.reply.spi.Routine;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -161,6 +163,19 @@ public class AsyncJobsAutoConfiguration {
     @ConditionalOnMissingBean
     JobReporter jobReporter(JobRepositoryPortOut repository) {
         return new JobReporterUseCase(repository);
+    }
+
+    /**
+     * SPI de leitura: permite ao endpoint de domínio do consumidor dizer de
+     * quando são os dados que está devolvendo (ADR 0004).
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    JobFreshness jobFreshness(JobRepositoryPortOut repository,
+                              JobFreshnessPolicyPortOut freshnessPolicy,
+                              CoalescingKeyPortOut coalescingKey,
+                              Clock clock) {
+        return new JobFreshnessUseCase(repository, freshnessPolicy, coalescingKey, clock);
     }
 
     // --- recuperação de jobs órfãos ----------------------------------------

@@ -1,5 +1,6 @@
 package com.async.request.reply.adapter.out.processing;
 
+import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobHandler;
 import com.async.request.reply.spi.Routine;
 import org.junit.jupiter.api.DisplayName;
@@ -63,7 +64,7 @@ class JobHandlerRegistryTest {
             }
 
             @Override
-            public void handle() {
+            public void handle(JobContext ctx) {
             }
         };
     }
