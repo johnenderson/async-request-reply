@@ -1,6 +1,7 @@
 package com.async.request.reply.adapter.out.processing;
 
 import com.async.request.reply.core.domain.Job;
+import com.async.request.reply.core.enums.JobStatus;
 import com.async.request.reply.core.port.out.JobProcessorPortOut;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.spi.AsyncJobHandler;
@@ -63,8 +64,11 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
         try {
             switch (routine) {
                 case JobHandler sync -> {
-                    sync.handle();                      // o efeito é a escrita na base do consumidor
-                    repository.complete(job.getId());   // o retorno do handler é o sinal de conclusão
+                    sync.handle(context(job));          // o efeito é a escrita na base do consumidor
+                    // o retorno do handler é o sinal de conclusão; se ele parou por
+                    // cancelamento, o UPDATE condicional recusa e o estado terminal
+                    // permanece — não há "descancelar"
+                    repository.complete(job.getId());
                 }
                 case AsyncJobHandler async -> runAsync(async, job);
                 default -> repository.fail(job.getId(), "Unsupported routine",
@@ -76,8 +80,28 @@ public class AsyncJobProcessorAdapterOut implements JobProcessorPortOut {
     }
 
     private void runAsync(AsyncJobHandler handler, Job job) {
-        JobContext ctx = job::getId; // expõe apenas o jobId
-        handler.start(ctx);
+        handler.start(context(job));
         // NÃO completa: aguarda JobReporter.complete(jobId) do worker
+    }
+
+    /**
+     * Contexto da rotina. O {@code isCancelled} lê o estado a cada chamada — é o
+     * preço de não manter cache que possa mentir sobre um cancelamento recente.
+     */
+    private JobContext context(Job job) {
+        return new JobContext() {
+
+            @Override
+            public String jobId() {
+                return job.getId();
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return repository.findById(job.getId())
+                        .map(current -> current.getStatus() == JobStatus.CANCELLED)
+                        .orElse(false);
+            }
+        };
     }
 }

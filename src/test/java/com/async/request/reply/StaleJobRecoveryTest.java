@@ -4,6 +4,7 @@ import com.async.request.reply.core.domain.Job;
 import com.async.request.reply.core.enums.JobStatus;
 import com.async.request.reply.core.port.out.JobRepositoryPortOut;
 import com.async.request.reply.core.service.StaleJobRecoveryService;
+import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobHandler;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,7 +56,11 @@ class StaleJobRecoveryTest extends PostgresContainerTestSupport {
         JobHandler reapHandler() {
             return new JobHandler() {
                 public String type() { return TYPE; }
-                public void handle() { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: o teste escreve o job orfao direto na
+                    // tabela e chama recovery.recover() manualmente — a rotina
+                    // so precisa existir para o type ser reconhecido
+                }
             };
         }
     }

@@ -1,5 +1,6 @@
 package com.async.request.reply;
 
+import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -73,7 +74,7 @@ class FixedClockJobTest extends PostgresContainerTestSupport {
         JobHandler clockHandler() {
             return new JobHandler() {
                 public String type() { return "clock-test"; }
-                public void handle() {
+                public void handle(JobContext ctx) {
                     TestGate.await(GATE.get());
                 }
             };

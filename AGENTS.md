@@ -64,8 +64,8 @@ Hexagonal, com dependências sempre apontando para dentro:
 - `config` — `AsyncJobsProperties` em pacote neutro (adapters não dependem de `autoconfigure`).
 - `autoconfigure` — composition root; 4 auto-configurations em
   `src/main/resources/META-INF/spring/*.imports`.
-- `spi` — o que o projeto consumidor implementa (`JobHandler`, `AsyncJobHandler`,
-  `JobReporter`).
+- `spi` — a fronteira com o projeto consumidor: ele **implementa** `JobHandler` /
+  `AsyncJobHandler`, e **injeta** `JobReporter` e `JobFreshness`.
 
 Regras que já custaram bugs e devem ser preservadas:
 
@@ -91,6 +91,12 @@ Regras que já custaram bugs e devem ser preservadas:
 8. **A lib não configura `DataSource` nem pool**, e não aplica DDL. O esquema é
    do consumidor; `src/main/resources/async-jobs-schema.sql` é a referência, e é
    o mesmo arquivo que os testes aplicam.
+9. **Cancelar não interrompe a thread da rotina.** É cooperativo por decisão
+   (ADR 0004): abortar no meio deixaria a base do consumidor parcialmente
+   atualizada. Não introduza `Thread.interrupt()` nem `Future.cancel(true)`.
+10. **Frescor depende de `coalesce-in-flight`**, porque a janela procura a última
+    carga concluída pela `coalescing_key` — que só é gravada quando o coalescing
+    está ligado. Ligar só o frescor era um no-op silencioso; hoje falha o startup.
 
 ## Testes
 

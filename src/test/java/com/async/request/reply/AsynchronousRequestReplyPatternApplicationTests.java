@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.Matchers.containsString;
@@ -48,16 +49,25 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
     /** Gate que mantém o handler "lento" ativo até o teste liberar (sem sleep fixo). */
     static final AtomicReference<CountDownLatch> SLOW_GATE = new AtomicReference<>(new CountDownLatch(0));
 
+    /** Coordenação do teste de cancelamento cooperativo, sem sleep fixo. */
+    static final AtomicReference<CountDownLatch> COOP_STARTED = new AtomicReference<>(new CountDownLatch(0));
+    static final AtomicReference<CountDownLatch> COOP_GATE = new AtomicReference<>(new CountDownLatch(0));
+    static final AtomicReference<Boolean> COOP_SAW_CANCELLATION = new AtomicReference<>();
+
     @BeforeEach
     void setup() {
         truncateJobs();
         mvc = MockMvcBuilders.webAppContextSetup(wac).build();
         SLOW_GATE.set(new CountDownLatch(1));
+        COOP_STARTED.set(new CountDownLatch(1));
+        COOP_GATE.set(new CountDownLatch(1));
+        COOP_SAW_CANCELLATION.set(null);
     }
 
     @AfterEach
     void releaseSlowGate() {
         SLOW_GATE.get().countDown();
+        COOP_GATE.get().countDown();
     }
 
     // -------------------------------------------------------------------------
@@ -70,7 +80,10 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler fastHandler() {
             return new JobHandler() {
                 public String type() { return "test"; }
-                public void handle() { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: estes testes verificam o ciclo de vida
+                    // do job (submit, status, headers), nao o efeito da rotina
+                }
             };
         }
 
@@ -78,7 +91,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler idempotentHandler() {
             return new JobHandler() {
                 public String type() { return "idempotent-test"; }
-                public void handle() { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: só a Idempotency-Key importa aqui
+                }
             };
         }
 
@@ -86,7 +101,7 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler slowHandler() {
             return new JobHandler() {
                 public String type() { return "cancel-test"; }
-                public void handle() {
+                public void handle(JobContext ctx) {
                     // bloqueia até o teste liberar — mantém o job ativo de forma determinística
                     TestGate.await(SLOW_GATE.get());
                 }
@@ -105,18 +120,12 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         }
 
         @Bean
-        JobHandler nullHandler() {
-            return new JobHandler() {
-                public String type() { return "null-test"; }
-                public void handle() { }
-            };
-        }
-
-        @Bean
         JobHandler numericNameHandler() {
             return new JobHandler() {
                 public String type() { return "123"; }
-                public void handle() { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: só o formato do type importa aqui
+                }
             };
         }
 
@@ -124,7 +133,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler dottedTypeHandler() {
             return new JobHandler() {
                 public String type() { return "report.v1_all-items"; }
-                public void handle() { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: só o formato do type importa aqui
+                }
             };
         }
 
@@ -132,7 +143,20 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler failingHandler() {
             return new JobHandler() {
                 public String type() { return "fail-test"; }
-                public void handle() { throw new IllegalStateException("boom simulado"); }
+                public void handle(JobContext ctx) { throw new IllegalStateException("boom simulado"); }
+            };
+        }
+
+        /** Rotina que decide parar sozinha ao ver o cancelamento (ADR 0004). */
+        @Bean
+        JobHandler cooperativeHandler() {
+            return new JobHandler() {
+                public String type() { return "coop-cancel-test"; }
+                public void handle(JobContext ctx) {
+                    COOP_STARTED.get().countDown();
+                    TestGate.await(COOP_GATE.get());   // espera o teste cancelar
+                    COOP_SAW_CANCELLATION.set(ctx.isCancelled());
+                }
             };
         }
     }
@@ -339,6 +363,31 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status", is("COMPLETED")))
                 .andExpect(jsonPath("$.percentComplete", is(100)));
+    }
+
+    // 15. Cancelamento cooperativo: a rotina ve o cancelamento e para sozinha
+    @Test
+    void cancelledJobIsVisibleToTheRunningRoutine() throws Exception {
+        MvcResult post = mvc.perform(post("/jobs/coop-cancel-test"))
+                .andExpect(status().isAccepted()).andReturn();
+        String jobId = post.getResponse().getContentAsString().replaceAll(".*\"jobId\":\"([^\"]+)\".*", "$1");
+
+        // garante que a rotina esta rodando antes de cancelar
+        assertTrue(COOP_STARTED.get().await(10, TimeUnit.SECONDS), "a rotina nao comecou");
+
+        mvc.perform(delete("/jobs/{id}", jobId)).andExpect(status().isAccepted());
+        COOP_GATE.get().countDown();   // libera a rotina para consultar o contexto
+
+        Awaitility.await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(50))
+                .until(() -> COOP_SAW_CANCELLATION.get() != null);
+        assertTrue(COOP_SAW_CANCELLATION.get(),
+                "a rotina precisa ver o cancelamento para poder parar num ponto consistente");
+
+        // a rotina retornou normalmente depois de parar; o complete que a lib
+        // tenta em seguida e recusado, e o estado terminal permanece
+        mvc.perform(get("/jobs/{id}/status", jobId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("CANCELLED")));
     }
 
     // --- helpers de espera (polling com timeout em vez de Thread.sleep) -----

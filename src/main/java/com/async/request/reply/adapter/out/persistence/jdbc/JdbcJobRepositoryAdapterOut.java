@@ -95,6 +95,11 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
              limit :limit
             """;
 
+    private static final String SELECT_LAST_COMPLETED_AT = """
+            select max(last_updated_at) from async_jobs
+             where coalescing_key = :coalescingKey and status = 'COMPLETED'
+            """;
+
     private static final String SELECT_FRESH_COMPLETED = """
             select * from async_jobs
              where coalescing_key = :coalescingKey
@@ -245,6 +250,19 @@ public class JdbcJobRepositoryAdapterOut implements JobRepositoryPortOut {
                 .param("completedAfter", at(completedAfter))
                 .query(JOB_MAPPER)
                 .optional();
+    }
+
+    @Override
+    public Optional<Instant> findLastCompletedAt(String coalescingKey) {
+        if (coalescingKey == null) {
+            return Optional.empty();
+        }
+        // max() sempre devolve uma linha; sem carga concluida, o valor e null
+        return jdbc.sql(SELECT_LAST_COMPLETED_AT)
+                .param("coalescingKey", coalescingKey)
+                .query(OffsetDateTime.class)
+                .optional()
+                .map(OffsetDateTime::toInstant);
     }
 
     /**

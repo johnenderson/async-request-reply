@@ -1,5 +1,6 @@
 package com.async.request.reply;
 
+import com.async.request.reply.spi.JobContext;
 import com.async.request.reply.spi.JobHandler;
 import com.jayway.jsonpath.JsonPath;
 import org.awaitility.Awaitility;
@@ -78,7 +79,10 @@ class TomcatEndToEndIntegrationTest extends PostgresContainerTestSupport {
         JobHandler e2eReportHandler() {
             return new JobHandler() {
                 public String type() { return "e2e-report"; }
-                public void handle() { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: este teste cobre o ciclo de vida pela
+                    // borda HTTP real, nao o efeito da rotina
+                }
             };
         }
 
@@ -86,7 +90,7 @@ class TomcatEndToEndIntegrationTest extends PostgresContainerTestSupport {
         JobHandler e2eSlowHandler() {
             return new JobHandler() {
                 public String type() { return "e2e-slow"; }
-                public void handle() {
+                public void handle(JobContext ctx) {
                     TestGate.await(GATE.get());
                 }
             };
