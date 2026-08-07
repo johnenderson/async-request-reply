@@ -63,10 +63,10 @@ class JobHandlerRegistryTest {
                 return type;
             }
 
-            // vazio de proposito: este teste cobre só a indexacao por type,
-            // a rotina nunca chega a rodar
             @Override
             public void handle(JobContext ctx) {
+                // vazio de proposito: este teste cobre só a indexacao por type,
+                // a rotina nunca chega a rodar
             }
         };
     }

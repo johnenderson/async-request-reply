@@ -80,9 +80,10 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler fastHandler() {
             return new JobHandler() {
                 public String type() { return "test"; }
-                // vazio de proposito: estes testes verificam o ciclo de vida do
-                // job (submit, status, headers), nao o efeito da rotina
-                public void handle(JobContext ctx) { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: estes testes verificam o ciclo de vida
+                    // do job (submit, status, headers), nao o efeito da rotina
+                }
             };
         }
 
@@ -90,8 +91,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler idempotentHandler() {
             return new JobHandler() {
                 public String type() { return "idempotent-test"; }
-                // vazio de proposito: só a Idempotency-Key importa aqui
-                public void handle(JobContext ctx) { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: só a Idempotency-Key importa aqui
+                }
             };
         }
 
@@ -121,8 +123,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler numericNameHandler() {
             return new JobHandler() {
                 public String type() { return "123"; }
-                // vazio de proposito: só o formato do type importa aqui
-                public void handle(JobContext ctx) { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: só o formato do type importa aqui
+                }
             };
         }
 
@@ -130,8 +133,9 @@ class AsynchronousRequestReplyPatternApplicationTests extends PostgresContainerT
         JobHandler dottedTypeHandler() {
             return new JobHandler() {
                 public String type() { return "report.v1_all-items"; }
-                // vazio de proposito: só o formato do type importa aqui
-                public void handle(JobContext ctx) { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: só o formato do type importa aqui
+                }
             };
         }
 

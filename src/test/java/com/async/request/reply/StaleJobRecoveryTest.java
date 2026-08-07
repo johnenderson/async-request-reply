@@ -56,10 +56,11 @@ class StaleJobRecoveryTest extends PostgresContainerTestSupport {
         JobHandler reapHandler() {
             return new JobHandler() {
                 public String type() { return TYPE; }
-                // vazio de proposito: o teste escreve o job orfao direto na
-                // tabela e chama recovery.recover() manualmente — a rotina
-                // so precisa existir para o type ser reconhecido
-                public void handle(JobContext ctx) { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: o teste escreve o job orfao direto na
+                    // tabela e chama recovery.recover() manualmente — a rotina
+                    // so precisa existir para o type ser reconhecido
+                }
             };
         }
     }

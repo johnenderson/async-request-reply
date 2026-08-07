@@ -79,9 +79,10 @@ class TomcatEndToEndIntegrationTest extends PostgresContainerTestSupport {
         JobHandler e2eReportHandler() {
             return new JobHandler() {
                 public String type() { return "e2e-report"; }
-                // vazio de proposito: este teste cobre o ciclo de vida pela
-                // borda HTTP real, nao o efeito da rotina
-                public void handle(JobContext ctx) { }
+                public void handle(JobContext ctx) {
+                    // vazio de proposito: este teste cobre o ciclo de vida pela
+                    // borda HTTP real, nao o efeito da rotina
+                }
             };
         }
 
